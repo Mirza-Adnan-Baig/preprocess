@@ -9,16 +9,16 @@ TABULAR_EXTENSIONS = {"csv", "xlsx", "xls"}
 
 
 def _build_pdf_dataframe(result) -> pd.DataFrame | None:
-    best_rows = None
+    groups: dict[tuple, list[list]] = {}
     for page in result.pages:
         for rows in page.tables_raw:
             if len(rows) < 2:
                 continue  # no header + data
-            if best_rows is None or len(rows) > len(best_rows):
-                best_rows = rows
-    if best_rows is None:
+            header = tuple(rows[0])
+            groups.setdefault(header, []).extend(rows[1:])
+    if not groups:
         return None
-    header, *body = best_rows
+    header, body = max(groups.items(), key=lambda kv: len(kv[1]))
     df = pd.DataFrame(body, columns=[str(c) for c in header])
     df = df.dropna(axis=0, how="all").reset_index(drop=True)
     return df

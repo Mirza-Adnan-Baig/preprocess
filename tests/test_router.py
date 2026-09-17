@@ -45,3 +45,21 @@ def test_router_pdf_populates_dataframe_from_table(tmp_path):
     assert result.dataframe is not None
     assert len(result.dataframe) == 12
     assert "Article" in result.dataframe.columns
+
+
+def test_router_pdf_dataframe_spans_multiple_pages(tmp_path):
+    path = tmp_path / "invoice.pdf"
+    n_line_items = 80
+    generate_invoice_pdf(str(path), n_line_items=n_line_items, seed=9)
+
+    result = extract_document(str(path))
+
+    # sanity check: this fixture must actually span multiple PDF pages,
+    # otherwise this test wouldn't exercise the cross-page merge at all
+    from src.extractors.pdf import extract_pdf
+    assert len(extract_pdf(str(path)).pages) >= 2
+
+    assert result.kind == "pdf"
+    assert result.dataframe is not None
+    assert len(result.dataframe) == n_line_items
+    assert "Article" in result.dataframe.columns
