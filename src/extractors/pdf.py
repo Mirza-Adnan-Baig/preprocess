@@ -39,7 +39,7 @@ def _table_to_markdown(table) -> str:
 def _ocr_page(page) -> str:
     pix = page.get_pixmap(dpi=200)
     image = Image.open(io.BytesIO(pix.tobytes("png")))
-    return pytesseract.image_to_string(image)
+    return pytesseract.image_to_string(image, lang="deu+eng")
 
 
 def extract_pdf(path: str) -> PDFExtraction:
