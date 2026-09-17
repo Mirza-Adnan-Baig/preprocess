@@ -32,3 +32,15 @@ def test_get_row(df):
     row = get_row(df, 1)
     assert row["Article"] == "Battery"
     assert row["Quantity"] == 5
+
+
+def test_sum_column_non_numeric_raises(df):
+    """sum_column should raise ValueError when column has no numeric values."""
+    with pytest.raises(ValueError, match="has no numeric values to sum"):
+        sum_column(df, "Article")
+
+
+def test_sum_column_empty_filtered_subset_returns_zero(df):
+    """sum_column should return 0.0 when filter results in empty DataFrame."""
+    result = sum_column(df, "Quantity", "Article == 'NonExistent'")
+    assert result == 0.0

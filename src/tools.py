@@ -13,7 +13,10 @@ def count_rows(df: pd.DataFrame, filter_expr: str | None = None) -> int:
 
 def sum_column(df: pd.DataFrame, column: str, filter_expr: str | None = None) -> float:
     subset = _apply_filter(df, filter_expr)
-    return float(pd.to_numeric(subset[column], errors="coerce").sum())
+    numeric = pd.to_numeric(subset[column], errors="coerce")
+    if len(subset) > 0 and numeric.notna().sum() == 0:
+        raise ValueError(f"Column '{column}' has no numeric values to sum")
+    return float(numeric.sum())
 
 
 def get_row(df: pd.DataFrame, index: int) -> dict:
