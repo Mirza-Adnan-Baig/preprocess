@@ -14,6 +14,7 @@ class PDFPage:
     text: str
     used_ocr: bool
     tables_markdown: list[str]
+    tables_raw: list[list[list]]
 
 
 @dataclass
@@ -36,6 +37,10 @@ def _table_to_markdown(table) -> str:
     return "\n".join([header_line, sep_line, *body_lines])
 
 
+def _table_rows(table) -> list[list]:
+    return table.extract()
+
+
 def _ocr_page(page) -> str:
     pix = page.get_pixmap(dpi=200)
     image = Image.open(io.BytesIO(pix.tobytes("png")))
@@ -55,6 +60,7 @@ def extract_pdf(path: str) -> PDFExtraction:
                 used_ocr = True
 
             found = page.find_tables()
+            tables_raw = [_table_rows(t) for t in found.tables]
             tables_markdown = [_table_to_markdown(t) for t in found.tables]
 
             pages.append(PDFPage(
@@ -62,6 +68,7 @@ def extract_pdf(path: str) -> PDFExtraction:
                 text=text,
                 used_ocr=used_ocr,
                 tables_markdown=tables_markdown,
+                tables_raw=tables_raw,
             ))
 
         full_text = "\n\n".join(p.text for p in pages)

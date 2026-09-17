@@ -33,3 +33,15 @@ def test_router_reports_unparseable_file(tmp_path):
     assert result.parse_failed is True
     assert result.message is not None
     assert "couldn't" in result.message.lower() or "could not" in result.message.lower()
+
+
+def test_router_pdf_populates_dataframe_from_table(tmp_path):
+    path = tmp_path / "invoice.pdf"
+    generate_invoice_pdf(str(path), n_line_items=12, seed=6)
+
+    result = extract_document(str(path))
+
+    assert result.kind == "pdf"
+    assert result.dataframe is not None
+    assert len(result.dataframe) == 12
+    assert "Article" in result.dataframe.columns
