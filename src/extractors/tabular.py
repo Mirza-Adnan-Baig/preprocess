@@ -1,3 +1,4 @@
+import csv
 from dataclasses import dataclass
 
 import pandas as pd
@@ -30,7 +31,11 @@ def _detect_header_row(raw: pd.DataFrame, max_scan: int = 10) -> int:
 
 def _load_raw(path: str) -> pd.DataFrame:
     if path.lower().endswith(".csv"):
-        return pd.read_csv(path, header=None)
+        with open(path, newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+        width = max((len(r) for r in rows), default=0)
+        padded = [r + [None] * (width - len(r)) for r in rows]
+        return pd.DataFrame(padded)
     return pd.read_excel(path, header=None)
 
 
