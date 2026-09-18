@@ -1,4 +1,30 @@
-# Fixing "failed to connect to Ollama" in the Open WebUI pipeline
+# Fixing Open WebUI pipeline problems: connection errors, hanging, and freezing
+
+## Symptom: it hangs forever / browser shows "connection lost" / never finishes
+
+**This was a real Open WebUI bug, not a document-parsing or Ollama problem.**
+Fixed as of the pipeline's `v0.4.0`.
+
+Root cause: the pipeline initially streamed its response as an `async`
+generator (`async def pipe(...): yield ...`). Open WebUI version 0.6.43 (and
+possibly nearby versions) has a confirmed bug where async-generator-based
+pipes never send a completion signal back to the browser — the model
+finishes generating, the server log shows it's done, but the chat UI never
+finds out and hangs in "executing" indefinitely
+([open-webui/open-webui#20196](https://github.com/open-webui/open-webui/issues/20196)).
+If this happens repeatedly (e.g. several people/attempts leave connections
+stuck open), it can also make Open WebUI itself become sluggish or
+unreachable for everyone, not just the person testing the pipeline.
+
+**The fix:** the pipeline now uses a **plain synchronous generator**
+instead of an async one (the confirmed community workaround for this
+bug) — same streaming behavior, without the broken completion signal.
+
+**What to do:** re-paste the latest `openwebui/exact_count_pipe.py` from
+this repo into Admin Panel → Functions (replace the old version), save,
+and try again. If Open WebUI itself was left unreachable from a previous
+hung attempt, it may need a restart first (ask IT, or restart it yourself
+if you have that access) before testing again.
 
 ## What this error actually means
 

@@ -1,7 +1,7 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.3.0
+version: 0.4.0
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
 Open WebUI Pipe Function. Answers questions about an uploaded PDF/CSV/XLSX
@@ -244,13 +244,16 @@ CONNECTION_HELP = (
 )
 
 
-async def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str, question: str):
-    """Async generator: yields text chunks as they arrive from Ollama, so the
-    connection to the browser stays alive throughout a long response instead
-    of going silent for the whole duration of one blocking call (which is
-    what was causing the "connection lost" / long-hang symptom — a single
-    non-streaming request to a large model can easily take longer than
-    Open WebUI's or a reverse proxy's idle-connection timeout)."""
+def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str, question: str):
+    """Plain (NOT async) generator: yields text chunks as they arrive from
+    Ollama, so the connection to the browser stays alive throughout a long
+    response instead of going silent for the whole duration of one blocking
+    call. Deliberately a sync generator, not an async one — Open WebUI
+    (confirmed in v0.6.43, see open-webui/open-webui#20196) does not
+    reliably send a completion signal for AsyncGenerator-based pipes, which
+    leaves the UI stuck showing "executing" forever even after the model has
+    actually finished. A plain sync generator is the confirmed community
+    workaround. Revisit this once that upstream bug is fixed."""
     import ollama
 
     client = ollama.Client(host=host)
@@ -327,7 +330,7 @@ class Pipe:
         self.name = "Exact Count Document Assistant"
         self.valves = self.Valves()
 
-    async def pipe(self, body: dict, __files__: list = None, __user__: dict = None):
+    def pipe(self, body: dict, __files__: list = None, __user__: dict = None):
         user_message = body.get("messages", [{}])[-1].get("content", "")
 
         if not __files__:
@@ -373,7 +376,7 @@ class Pipe:
                 "Exact counts are NOT guaranteed here — say so if a count is asked."
             )
 
-        async for chunk in _run_tool_loop(self.valves.MODEL, self.valves.OLLAMA_HOST, df, context, user_message):
+        for chunk in _run_tool_loop(self.valves.MODEL, self.valves.OLLAMA_HOST, df, context, user_message):
             yield chunk
 
         if fallback_used:
