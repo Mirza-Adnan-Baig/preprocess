@@ -131,12 +131,30 @@ Close and reopen your terminal after installing. Confirm it worked:
 python --version
 ```
 
-### 5.3 Clone this repo
+### 5.3 Get the code onto the machine
+
+**If Git is installed:**
 
 ```powershell
 git clone https://github.com/Mirza-Adnan-Baig/preprocess.git
 cd preprocess
 ```
+
+**If Git is NOT installed and you don't want to install it** (e.g. you
+only have Python + VS Code and no admin rights to add Git): download the
+code as a ZIP instead — no Git required.
+
+1. Go to https://github.com/Mirza-Adnan-Baig/preprocess in a browser.
+2. Click the green **Code** button → **Download ZIP**.
+3. Extract the ZIP anywhere (e.g. `Documents\preprocess`).
+4. Open that extracted folder in VS Code (**File → Open Folder**), and use
+   VS Code's built-in terminal (**Terminal → New Terminal**) for every
+   command below instead of PowerShell — it's the same thing, just inside
+   the editor.
+
+The only downside of the ZIP route: you won't get future updates
+automatically (you'd re-download the ZIP), and you can't `git push` any
+changes back. Fine for just running and testing the pipeline.
 
 ### 5.4 Create a virtual environment and install dependencies
 
