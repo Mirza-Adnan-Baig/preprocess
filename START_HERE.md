@@ -228,6 +228,17 @@ Try it with a CSV or XLSX too:
 python -m scripts.ask path\to\inventory.xlsx "What's the total quantity where unit price is above 50?"
 ```
 
+## 6.5 Running it inside Open WebUI itself (Phase 1, needs your admin access)
+
+Everything above is you manually running a script per file. To make it run
+automatically for every upload in the real Open WebUI chat, see
+[`openwebui/README.md`](openwebui/README.md) — two files to install via
+**Admin Panel → Functions** (your admin access covers this, no IT needed
+for this step). **Install `diagnostic_pipe.py` first** — the file-access
+mechanism genuinely hasn't been verified against your live instance yet,
+and that file tells us what we're actually working with before trusting
+the real one.
+
 ## 7. Testing at the office (weak PC, real invoices, no local model)
 
 Your office PC doesn't need to run the LLM itself. The extraction part
