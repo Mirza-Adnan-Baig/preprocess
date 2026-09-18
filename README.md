@@ -36,6 +36,55 @@ e.g. `ollama pull qwen2.5:7b` (matches `tests/test_agent_e2e.py`'s default).
 
     pytest -v
 
+## Try it on a real document
+
+`scripts/ask.py` is a small CLI for manually testing against a real file —
+no test-writing required. Run it as a module from the repo root (plain
+`python scripts/ask.py` won't find the `src` package):
+
+    python -m scripts.ask path/to/invoice.pdf "How many articles are on this invoice?"
+    python -m scripts.ask path/to/inventory.xlsx "What's the total quantity above 50 EUR?"
+
+It prints what got extracted (kind, facts, the DataFrame if one was built)
+and then the model's answer, so you can see exactly what the model was
+given before trusting its response.
+
+### Testing on a weaker PC (e.g. the office machine) against the real model
+
+You don't need a GPU or 16GB+ RAM to run this script — extraction (pandas,
+PyMuPDF) is lightweight and CPU-only. The only heavy part is the LLM call
+itself, and that doesn't have to run locally: point the `ollama` client at
+the Mac Studio's Ollama server over the LAN instead of running a model on
+the weak PC.
+
+1. Copy this repo to the office PC (no git remote is configured yet, so use
+   a USB drive or a network share for now).
+2. `pip install -r requirements.txt` (skip installing Ollama itself, and
+   skip pulling a model — you're borrowing the Mac Studio's).
+3. Confirm with IT whether Ollama's HTTP API on the Mac Studio is reachable
+   from other machines on the LAN (Open WebUI reaching it doesn't prove
+   this if Open WebUI runs on the same machine and talks to it over
+   `localhost` — that's a separate question worth asking, and may need
+   `OLLAMA_HOST=0.0.0.0` set on the Mac Studio's Ollama service plus a
+   firewall allowance for port 11434).
+4. If reachable, set the environment variable before running the script so
+   it talks to that server instead of `localhost`:
+
+       set OLLAMA_HOST=http://<mac-studio-lan-ip>:11434
+       python -m scripts.ask path\to\real_invoice.pdf "How many articles are in this document?"
+
+   and pass `--model qwen3.6:27b` (or whatever the Mac Studio's model is
+   actually tagged as in `ollama list` there) instead of the default
+   `qwen2.5:7b`.
+5. If it's not reachable (IT hasn't opened it up, or Open WebUI is the only
+   exposed interface), you can still test everything **except the final
+   LLM answer** on the weak PC: extraction, the FACTS block, and the
+   DataFrame the tools would operate on are all visible in the "Extraction
+   summary" the script prints before it ever calls the model. That alone
+   validates the harder, more failure-prone half of the pipeline (parsing a
+   real messy German invoice/inventory file correctly) without needing any
+   model access at all.
+
 ## Known limitations (Phase 0 — read before Phase 1 packaging)
 
 - **PDF tables that don't repeat their header on continuation pages won't
