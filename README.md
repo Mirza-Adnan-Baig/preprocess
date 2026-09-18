@@ -22,8 +22,11 @@ working end to end.
 ## Setup
 
     python -m venv .venv
-    .venv\Scripts\activate
+    .\.venv\Scripts\Activate.ps1
     pip install -r requirements.txt
+
+(PowerShell syntax — the `.\` and `.ps1` matter; `.venv\Scripts\activate`
+alone, the cmd.exe form, silently does nothing in PowerShell.)
 
 Install the Tesseract OCR binary separately (required for scanned-PDF
 fallback): https://github.com/tesseract-ocr/tesseract — **you must also
@@ -61,8 +64,9 @@ itself, and that doesn't have to run locally: point the `ollama` client at
 the Mac Studio's Ollama server over the LAN instead of running a model on
 the weak PC.
 
-1. Copy this repo to the office PC (no git remote is configured yet, so use
-   a USB drive or a network share for now).
+1. `git clone https://github.com/Mirza-Adnan-Baig/preprocess.git` (this repo
+   is now on GitHub — see `START_HERE.md` §5.3 for a no-Git ZIP-download
+   alternative if needed).
 2. `pip install -r requirements.txt` (skip installing Ollama itself, and
    skip pulling a model — you're borrowing the Mac Studio's).
 3. Confirm with IT whether Ollama's HTTP API on the Mac Studio is reachable
@@ -72,9 +76,10 @@ the weak PC.
    `OLLAMA_HOST=0.0.0.0` set on the Mac Studio's Ollama service plus a
    firewall allowance for port 11434).
 4. If reachable, set the environment variable before running the script so
-   it talks to that server instead of `localhost`:
+   it talks to that server instead of `localhost` (PowerShell syntax —
+   `set OLLAMA_HOST=...`, the cmd.exe form, does not work here):
 
-       set OLLAMA_HOST=http://<mac-studio-lan-ip>:11434
+       $env:OLLAMA_HOST = "http://<mac-studio-lan-ip>:11434"
        python -m scripts.ask path\to\real_invoice.pdf "How many articles are in this document?"
 
    and pass `--model qwen3.6:27b` (or whatever the Mac Studio's model is

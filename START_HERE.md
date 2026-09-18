@@ -160,12 +160,19 @@ changes back. Fine for just running and testing the pipeline.
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-You'll need to run `.venv\Scripts\activate` again every time you open a
-new terminal to work on this.
+The `.\` and `.ps1` matter in PowerShell — `.venv\Scripts\activate` (what
+you'd type in cmd.exe) silently does nothing here; it neither errors nor
+activates anything, so you'd only notice something's wrong when a later
+command mysteriously fails. If you get an error instead saying scripts are
+disabled on this system, see §10.
+
+You'll need to run `.\.venv\Scripts\Activate.ps1` again every time you open
+a new terminal to work on this (you'll know it worked because your prompt
+gets a `(.venv)` prefix).
 
 ### 5.5 Install Tesseract OCR (only needed for scanned/image PDFs)
 
@@ -258,9 +265,14 @@ the Mac Studio over your office LAN instead of locally.
    `11434`).
 3. **If reachable:**
    ```powershell
-   set OLLAMA_HOST=http://<mac-studio-lan-ip>:11434
+   $env:OLLAMA_HOST = "http://<mac-studio-lan-ip>:11434"
    python -m scripts.ask path\to\real_invoice.pdf "How many articles are in this document?" --model qwen3.6:27b
    ```
+   (This is PowerShell syntax. `set OLLAMA_HOST=...` — the cmd.exe way — does
+   NOT work here; PowerShell's `set` doesn't touch environment variables the
+   same way, so the script would silently keep hitting `localhost` instead.)
+   This only lasts for the current terminal window — you'll need to set it
+   again next time you open a new one.
    (Check the exact model name/tag with `ollama list` on the Mac Studio if
    `qwen3.6:27b` doesn't match — IT can confirm.)
 4. **If not reachable (yet):** you can still validate the more
@@ -298,15 +310,23 @@ the Mac Studio over your office LAN instead of locally.
    thing you can do next; everything so far was validated against
    synthetic data.
 2. Have the IT conversation from §7.2 above.
-3. Once real-document testing looks good, the next phase is packaging this
-   as an Open WebUI Pipeline (a plugin) so it runs automatically when
-   *anyone* uploads a file in the chat — not just when you run this script
-   manually. See `docs/design-spec.md` §8 for the full rollout plan.
+3. An initial Open WebUI integration already exists (§6.5,
+   `openwebui/README.md`) so it can eventually run automatically for
+   *anyone's* upload, not just when you run the script manually — but its
+   file-access mechanism needs live verification via the diagnostic pipe
+   first. See `docs/design-spec.md` §8 for the full rollout plan.
 4. Before Phase 2 (real employee use, not just your own testing): harden
    the filter-input handling noted in §8.
 
 ## 10. If something doesn't work
 
+- **`.\.venv\Scripts\Activate.ps1 cannot be loaded because running scripts is
+  disabled on this system`** — very likely on a genuinely fresh PC; PowerShell
+  blocks scripts by default. Fix (one-time, per Windows user account):
+  ```powershell
+  Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+  ```
+  Then try activating again.
 - `ModuleNotFoundError: No module named 'src'` — you ran
   `python scripts\ask.py` instead of `python -m scripts.ask`. Use the
   latter.
