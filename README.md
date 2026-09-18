@@ -1,11 +1,15 @@
 # local-llm-pipeline
 
+**New here? Read [START_HERE.md](START_HERE.md) first** — it explains the
+whole project from scratch, what happened overnight, and how to set this
+up on a fresh machine. This README is the shorter technical reference.
+
 Prototype document-preprocessing pipeline for the FARO local-LLM project.
 Runs entirely on local hardware with synthetic test data — no dependency on
 the Mac Studio or real company documents. See
-`../superpowers/specs/2026-09-18-local-llm-document-preprocessing-design.md`
-for the full design and `../superpowers/plans/2026-09-18-local-preprocessing-pipeline-phase0.md`
-for the implementation plan this was built from.
+[docs/design-spec.md](docs/design-spec.md) for the full design and
+[docs/phase0-plan.md](docs/phase0-plan.md) for the implementation plan this
+was built from.
 
 **Status: Phase 0 complete.** All 6 planned tasks, one cross-task fix (PDF
 tables now produce a DataFrame, not just Task 4's original tabular-only
