@@ -1,7 +1,7 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.5.0
+version: 0.6.0
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
 Open WebUI Pipe Function. Answers questions about an uploaded PDF/CSV/XLSX
@@ -152,7 +152,14 @@ def _extract_pdf_bytes(raw_bytes: bytes) -> tuple[pd.DataFrame | None, dict, str
         df = df.dropna(axis=0, how="all").reset_index(drop=True)
         df = _normalize_numeric_columns(df)
         facts.update(_compute_facts(df))
-        markdown = full_text + "\n\n" + df.to_markdown(index=False)
+        # full_text already contains every table cell as raw page text, so
+        # appending the whole thing plus the clean markdown table roughly
+        # doubles what the model has to process every round. Keep just a
+        # short prefix of full_text (header/company info, dates, footer
+        # notes) and let the table (the actual countable data) carry the
+        # rest — cuts per-round latency without losing the row data itself.
+        text_preview = full_text[:800]
+        markdown = text_preview + "\n\n" + df.to_markdown(index=False)
         return df, facts, markdown
     finally:
         doc.close()
