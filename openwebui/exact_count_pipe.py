@@ -1,7 +1,7 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.2.0
+version: 0.3.0
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
 Open WebUI Pipe Function. Answers questions about an uploaded PDF/CSV/XLSX
@@ -232,7 +232,25 @@ SYSTEM_PROMPT = (
 )
 
 
-def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str, question: str) -> str:
+CONNECTION_HELP = (
+    "This is a connectivity/config problem, not a document-parsing one. Check:\n"
+    "- Is Ollama actually running on the Mac Studio? (`ollama list` in Terminal there)\n"
+    "- Does the model name above exactly match `ollama list`'s output?\n"
+    "- **If Open WebUI runs in Docker**, `localhost`/`127.0.0.1` inside the container is "
+    "NOT the Mac itself — try `http://host.docker.internal:11434` as the OLLAMA_HOST "
+    "valve instead (Admin Panel > Functions > this function's gear icon).\n"
+    "- If Ollama is ALSO in a Docker container on the same network as Open WebUI, use "
+    "that container's service name instead, e.g. `http://ollama:11434`."
+)
+
+
+async def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str, question: str):
+    """Async generator: yields text chunks as they arrive from Ollama, so the
+    connection to the browser stays alive throughout a long response instead
+    of going silent for the whole duration of one blocking call (which is
+    what was causing the "connection lost" / long-hang symptom — a single
+    non-streaming request to a large model can easily take longer than
+    Open WebUI's or a reverse proxy's idle-connection timeout)."""
     import ollama
 
     client = ollama.Client(host=host)
@@ -243,27 +261,32 @@ def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str,
     ]
     tools = TOOL_SCHEMAS if df is not None else None
 
-    for _ in range(4):
+    for round_num in range(4):
+        full_content = ""
+        tool_calls = None
         try:
-            response = client.chat(model=model, messages=messages, tools=tools)
+            stream = client.chat(model=model, messages=messages, tools=tools, stream=True)
+            for chunk in stream:
+                piece = chunk.get("message", {}).get("content", "")
+                if piece:
+                    full_content += piece
+                    yield piece
+                if chunk.get("message", {}).get("tool_calls"):
+                    tool_calls = chunk["message"]["tool_calls"]
         except Exception as exc:
-            return (
-                f"Could not reach Ollama at `{host}` (model `{model}`): {exc}\n\n"
-                "This is a connectivity/config problem, not a document-parsing one. Check:\n"
-                "- Is Ollama actually running on the Mac Studio? (`ollama list` in Terminal there)\n"
-                "- Does the model name above exactly match `ollama list`'s output?\n"
-                "- **If Open WebUI runs in Docker**, `localhost`/`127.0.0.1` inside the container is "
-                "NOT the Mac itself — try `http://host.docker.internal:11434` as the OLLAMA_HOST "
-                "valve instead (Admin Panel > Functions > this function's gear icon).\n"
-                "- If Ollama is ALSO in a Docker container on the same network as Open WebUI, use "
-                "that container's service name instead, e.g. `http://ollama:11434`."
+            yield (
+                f"\n\nCould not reach Ollama at `{host}` (model `{model}`): {exc}\n\n"
+                + CONNECTION_HELP
             )
-        message = response["message"]
-        messages.append(message)
+            return
 
-        tool_calls = message.get("tool_calls")
+        messages.append({"role": "assistant", "content": full_content, "tool_calls": tool_calls})
+
         if not tool_calls:
-            return message["content"]
+            return  # full_content has already been streamed above
+
+        if round_num < 3:
+            yield "\n\n_(checking the data...)_\n\n"
 
         for call in tool_calls:
             name = call["function"]["name"]
@@ -287,7 +310,7 @@ def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str,
 
             messages.append({"role": "tool", "content": json.dumps(result, default=str), "tool_name": name})
 
-    return "Couldn't reach a final answer within the tool-call budget."
+    yield "\n\nCouldn't reach a final answer within the tool-call budget."
 
 
 # ---------------------------------------------------------------------------
@@ -304,17 +327,20 @@ class Pipe:
         self.name = "Exact Count Document Assistant"
         self.valves = self.Valves()
 
-    async def pipe(self, body: dict, __files__: list = None, __user__: dict = None) -> str:
+    async def pipe(self, body: dict, __files__: list = None, __user__: dict = None):
         user_message = body.get("messages", [{}])[-1].get("content", "")
 
         if not __files__:
-            return "Please attach a PDF, CSV, or XLSX file with your question."
+            yield "Please attach a PDF, CSV, or XLSX file with your question."
+            return
 
         f = __files__[0]
         file_info = f.get("file", {})
         filename = file_info.get("filename", "")
         file_id = file_info.get("id", "")
         ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+
+        yield "_(extracting document...)_\n\n"
 
         raw_bytes = _find_raw_file_on_disk(file_id, filename)
         fallback_used = raw_bytes is None
@@ -331,9 +357,11 @@ class Pipe:
                 df, facts = None, None
                 markdown = file_info.get("data", {}).get("content", "") or ""
             else:
-                return f"Couldn't parse this file (unsupported type: .{ext})."
+                yield f"Couldn't parse this file (unsupported type: .{ext})."
+                return
         except Exception as e:
-            return f"Couldn't fully parse this file: {e}"
+            yield f"Couldn't fully parse this file: {e}"
+            return
 
         context = markdown
         if facts:
@@ -345,12 +373,12 @@ class Pipe:
                 "Exact counts are NOT guaranteed here — say so if a count is asked."
             )
 
-        answer = _run_tool_loop(self.valves.MODEL, self.valves.OLLAMA_HOST, df, context, user_message)
+        async for chunk in _run_tool_loop(self.valves.MODEL, self.valves.OLLAMA_HOST, df, context, user_message):
+            yield chunk
 
         if fallback_used:
-            answer += (
+            yield (
                 "\n\n_(FALLBACK_USED: raw file not found on disk — this answer used "
                 "Open WebUI's own extracted text, not the verified extraction pipeline. "
                 "Treat exact numbers with caution.)_"
             )
-        return answer
