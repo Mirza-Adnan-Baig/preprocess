@@ -1,7 +1,7 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.1.0
+version: 0.2.0
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
 Open WebUI Pipe Function. Answers questions about an uploaded PDF/CSV/XLSX
@@ -20,6 +20,13 @@ counts) — the FALLBACK_USED note in every answer tells you which happened.
 Install: Open WebUI admin -> Admin Panel -> Functions -> Create -> paste
 this whole file -> Save -> toggle Active -> select "Exact Count Document
 Assistant" as the model in a new chat -> upload a file -> ask a question.
+
+If you get a connection error (e.g. "failed to connect to ollama"), open
+this function's settings (gear icon, Admin Panel -> Functions) and check
+the OLLAMA_HOST valve -- the default assumes Ollama is reachable at
+localhost from wherever Open WebUI's own process runs, which is FALSE if
+Open WebUI is running inside Docker. See docs/openwebui-connection-troubleshooting.md
+in this repo for the full diagnosis.
 
 Mirrors the tested logic in this repo's src/extractors/ and src/tools.py —
 see docs/design-spec.md and docs/phase0-plan.md for the full design.
@@ -225,8 +232,10 @@ SYSTEM_PROMPT = (
 )
 
 
-def _run_tool_loop(model: str, df: pd.DataFrame | None, context: str, question: str) -> str:
+def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str, question: str) -> str:
     import ollama
+
+    client = ollama.Client(host=host)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -235,7 +244,20 @@ def _run_tool_loop(model: str, df: pd.DataFrame | None, context: str, question: 
     tools = TOOL_SCHEMAS if df is not None else None
 
     for _ in range(4):
-        response = ollama.chat(model=model, messages=messages, tools=tools)
+        try:
+            response = client.chat(model=model, messages=messages, tools=tools)
+        except Exception as exc:
+            return (
+                f"Could not reach Ollama at `{host}` (model `{model}`): {exc}\n\n"
+                "This is a connectivity/config problem, not a document-parsing one. Check:\n"
+                "- Is Ollama actually running on the Mac Studio? (`ollama list` in Terminal there)\n"
+                "- Does the model name above exactly match `ollama list`'s output?\n"
+                "- **If Open WebUI runs in Docker**, `localhost`/`127.0.0.1` inside the container is "
+                "NOT the Mac itself — try `http://host.docker.internal:11434` as the OLLAMA_HOST "
+                "valve instead (Admin Panel > Functions > this function's gear icon).\n"
+                "- If Ollama is ALSO in a Docker container on the same network as Open WebUI, use "
+                "that container's service name instead, e.g. `http://ollama:11434`."
+            )
         message = response["message"]
         messages.append(message)
 
@@ -275,6 +297,7 @@ def _run_tool_loop(model: str, df: pd.DataFrame | None, context: str, question: 
 class Pipe:
     class Valves(BaseModel):
         MODEL: str = "qwen3.6:27b"
+        OLLAMA_HOST: str = "http://localhost:11434"
 
     def __init__(self):
         self.id = "exact_count_document_assistant"
@@ -322,7 +345,7 @@ class Pipe:
                 "Exact counts are NOT guaranteed here — say so if a count is asked."
             )
 
-        answer = _run_tool_loop(self.valves.MODEL, df, context, user_message)
+        answer = _run_tool_loop(self.valves.MODEL, self.valves.OLLAMA_HOST, df, context, user_message)
 
         if fallback_used:
             answer += (

@@ -1,0 +1,76 @@
+# Fixing "failed to connect to Ollama" in the Open WebUI pipeline
+
+## What this error actually means
+
+The exact message — *"failed to connect to Ollama. Please check that
+Ollama is downloaded"* — is misleading. It's the `ollama` Python package's
+own generic error text for "I couldn't reach the address I was given," and
+it says that **even when Ollama is fully installed and running**. This was
+confirmed directly: pointing the pipeline at a deliberately wrong address
+on a machine where Ollama *is* running produces this exact message.
+
+So: **this is a network/address problem, not a "reinstall Ollama"
+problem.** Ollama is almost certainly fine on the Mac Studio — the pipe
+just isn't reaching it from wherever it's actually running.
+
+## The most likely cause: Docker
+
+Open WebUI is very commonly run inside a Docker container. If that's the
+case here, `localhost` (the pipe's old default) refers to *the container
+itself*, not the Mac Studio — even though Open WebUI and Ollama both
+"live" on the same physical machine, the container is functionally a
+separate, isolated machine as far as networking is concerned.
+
+**Check this first: is Open WebUI running in Docker on the Mac Studio?**
+If you (or IT) have Terminal access there:
+```bash
+docker ps
+```
+If you see an `open-webui` (or similar) container listed, this is
+almost certainly the issue.
+
+## The fix — no code edits needed
+
+The pipeline now has a configurable **OLLAMA_HOST** setting (a "Valve" in
+Open WebUI's terminology) instead of a hardcoded address. To change it:
+
+1. **Admin Panel → Functions**
+2. Find **"Exact Count Document Assistant"**, click its **gear/settings icon**
+3. Change **OLLAMA_HOST** depending on your setup:
+
+| Setup | Value to try |
+|---|---|
+| Open WebUI in Docker, Ollama installed natively on the Mac (not in Docker) | `http://host.docker.internal:11434` |
+| Open WebUI in Docker, Ollama ALSO in a Docker container (e.g. the official `docker-compose` bundle) | `http://ollama:11434` (or whatever the Ollama service is named in that compose file) |
+| Neither is in Docker (both run natively on the Mac) | `http://localhost:11434` (the default — if this doesn't work in this scenario, Ollama itself likely isn't running: check with `ollama list` in Terminal) |
+
+4. Save, then try uploading a file and asking a question again.
+
+## If none of those work
+
+Ask whoever set up Open WebUI on the Mac Studio (or check `docker ps` /
+`docker inspect` yourself if you have access) exactly how it was deployed
+— native install vs. Docker, and if Docker, what network mode and what the
+Ollama container (if any) is named. That fully determines the right
+`OLLAMA_HOST` value; the table above covers the common cases but isn't
+exhaustive.
+
+As a fallback sanity check, from a Terminal that has access to wherever
+Open WebUI's process actually runs (inside the container, if it's
+Dockerized: `docker exec -it <container-name> sh`), confirm the address is
+reachable at all:
+```bash
+curl http://<candidate-ollama-host>:11434/api/tags
+```
+If that doesn't return a list of models, the address is still wrong (or
+that path is still blocked) — keep trying the alternatives in the table.
+
+## What was actually wrong with the pipeline code before this fix
+
+The pipeline previously called Ollama with a hardcoded assumption that
+`localhost:11434` was always reachable, with no way to override it short
+of editing the source and re-pasting the whole function into Open WebUI.
+It's now a Valve (configurable from the admin UI) and any connection
+failure returns a clear, specific message in the chat itself — pointing at
+this document — instead of silently failing or showing the generic
+"check that Ollama is downloaded" text.

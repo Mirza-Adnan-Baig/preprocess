@@ -43,8 +43,15 @@ file, ask your question.
    isn't.
 
 **Config:** click the function's settings (gear icon) in Admin Panel →
-Functions to set `MODEL` to whatever the Mac Studio's model is actually
-tagged as in `ollama list` there (defaults to `qwen3.6:27b`).
+Functions. Two valves:
+- `MODEL` — whatever the Mac Studio's model is actually tagged as in
+  `ollama list` there (defaults to `qwen3.6:27b`).
+- `OLLAMA_HOST` — where to reach Ollama (defaults to `http://localhost:11434`).
+  **If you get "failed to connect to Ollama"**, this is almost always the
+  wrong value, not a real Ollama problem — see
+  [`../docs/openwebui-connection-troubleshooting.md`](../docs/openwebui-connection-troubleshooting.md)
+  (short version: Open WebUI running in Docker means `localhost` means the
+  container, not the Mac — try `http://host.docker.internal:11434`).
 
 **Verified so far:** the extraction and tool-calling logic itself was
 tested tonight against real synthetic data and a real local model — correct
