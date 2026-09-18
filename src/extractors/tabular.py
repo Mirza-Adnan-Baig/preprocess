@@ -1,7 +1,10 @@
 import csv
+import io
 from dataclasses import dataclass
 
 import pandas as pd
+
+from src.extractors.dtypes import normalize_numeric_columns
 
 
 @dataclass
@@ -29,17 +32,34 @@ def _detect_header_row(raw: pd.DataFrame, max_scan: int = 10) -> int:
     return best_row
 
 
+def _read_csv_text(path: str) -> str:
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            return f.read()
+    except UnicodeDecodeError:
+        with open(path, newline="", encoding="cp1252") as f:
+            return f.read()
+
+
+def _detect_delimiter(sample: str) -> str:
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except csv.Error:
+        return ","
+
+
 def _load_raw(path: str) -> pd.DataFrame:
     if path.lower().endswith(".csv"):
-        with open(path, newline="", encoding="utf-8") as f:
-            rows = list(csv.reader(f))
+        text = _read_csv_text(path)
+        delimiter = _detect_delimiter(text[:4096])
+        rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
         width = max((len(r) for r in rows), default=0)
         padded = [r + [None] * (width - len(r)) for r in rows]
         return pd.DataFrame(padded)
     return pd.read_excel(path, header=None)
 
 
-def _compute_facts(df: pd.DataFrame) -> dict:
+def compute_facts(df: pd.DataFrame) -> dict:
     facts = {"row_count": len(df), "columns": {}}
     for col in df.columns:
         numeric = pd.to_numeric(df[col], errors="coerce")
@@ -63,8 +83,9 @@ def extract_tabular(path: str) -> TabularExtraction:
     df.columns = [str(c) for c in header]
     df = df.dropna(axis=0, how="all").dropna(axis=1, how="all")
     df = df.reset_index(drop=True)
+    df = normalize_numeric_columns(df)
 
-    facts = _compute_facts(df)
+    facts = compute_facts(df)
     markdown_table = df.to_markdown(index=False)
 
     return TabularExtraction(markdown_table=markdown_table, facts=facts, dataframe=df)

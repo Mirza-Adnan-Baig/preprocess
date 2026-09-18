@@ -23,10 +23,19 @@ SYSTEM_PROMPT = (
 )
 
 
+NO_TABLE_GUIDANCE = (
+    "No structured table was detected in this document — exact counts/sums "
+    "are not available; answer only what can be directly read from the text "
+    "below, and say so if a count is being requested."
+)
+
+
 def _build_messages(extraction: ExtractionResult, question: str) -> list[dict]:
     context = extraction.markdown or ""
     if extraction.facts:
         context += f"\n\nFACTS: {json.dumps(extraction.facts)}"
+    if extraction.dataframe is None:
+        context += f"\n\nNOTE: {NO_TABLE_GUIDANCE}"
 
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -68,7 +77,7 @@ def answer_question(model: str, extraction: ExtractionResult, question: str) -> 
             messages.append({
                 "role": "tool",
                 "content": json.dumps(result),
-                "name": name,
+                "tool_name": name,
             })
 
     return "Couldn't reach a final answer within the tool-call budget."
