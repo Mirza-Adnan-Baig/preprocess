@@ -253,35 +253,21 @@ Your office PC doesn't need to run the LLM itself. The extraction part
 any PC — the only heavy part is the model, and that can run remotely on
 the Mac Studio over your office LAN instead of locally.
 
-1. Do §5.1–5.4 above (git, Python, clone, install deps) — skip §5.7
-   (installing Ollama locally), you're borrowing the Mac Studio's instead.
-2. **Ask your Head of IT this specific question today:** is the Mac
-   Studio's Ollama server reachable over the LAN from other machines, or
-   only from Open WebUI running on that same machine? These are different
-   things — Open WebUI reaching Ollama over `localhost` doesn't prove
-   anything about LAN reachability. If it's not currently open, ask what
-   it would take to open it (typically: setting `OLLAMA_HOST=0.0.0.0` on
-   the Mac Studio's Ollama service, plus a firewall allowance for port
-   `11434`).
-3. **If reachable:**
-   ```powershell
-   $env:OLLAMA_HOST = "http://<mac-studio-lan-ip>:11434"
-   python -m scripts.ask path\to\real_invoice.pdf "How many articles are in this document?" --model qwen3.6:27b
-   ```
-   (This is PowerShell syntax. `set OLLAMA_HOST=...` — the cmd.exe way — does
-   NOT work here; PowerShell's `set` doesn't touch environment variables the
-   same way, so the script would silently keep hitting `localhost` instead.)
-   This only lasts for the current terminal window — you'll need to set it
-   again next time you open a new one.
-   (Check the exact model name/tag with `ollama list` on the Mac Studio if
-   `qwen3.6:27b` doesn't match — IT can confirm.)
-4. **If not reachable (yet):** you can still validate the more
-   failure-prone half of this — whether a real messy German invoice or
-   inventory file actually parses correctly — because the extraction
-   summary (point 1 in §6) prints *before* any model call happens. Run the
-   command anyway; even if the final model call fails or times out because
-   there's no reachable server, you'll already see the extracted table and
-   know whether the parser worked on your real document.
+Do §5.1–5.4 above (git, Python, clone, install deps) — skip §5.7 (installing
+Ollama locally), you're borrowing the Mac Studio's instead.
+
+Full setup process, including a ready-to-forward request for IT and the
+exact commands to run once it's open: see
+[`docs/connect-to-mac-studio.md`](docs/connect-to-mac-studio.md) and
+[`docs/it-request-lan-ollama-access.md`](docs/it-request-lan-ollama-access.md).
+
+**In the meantime**, before IT opens anything, you can still validate the
+more failure-prone half of this — whether a real messy German invoice or
+inventory file actually parses correctly — because the extraction summary
+(point 1 in §6) prints *before* any model call happens. Run
+`python -m scripts.ask` against a real file anyway; even if the final model
+call fails or times out because there's no reachable server yet, you'll
+already see the extracted table and know whether the parser worked.
 
 ## 8. Known limitations — be honest about these with IT
 
