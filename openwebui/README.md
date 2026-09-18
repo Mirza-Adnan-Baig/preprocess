@@ -1,6 +1,31 @@
 # Open WebUI integration (Phase 1 — not yet verified live)
 
-Two files here, install in this order:
+Three files here, install in this order:
+
+## 0. `streaming_diagnostic_pipe.py` — if the real pipeline hangs/freezes, install this FIRST
+
+Two attempted fixes for freezing (async streaming, then a sync-generator
+workaround for a known Open WebUI bug) didn't change the symptom, which
+means it's time to isolate the actual cause instead of guessing further.
+This does nothing except yield 6 short messages 2 seconds apart, no
+document/Ollama/extraction involved — it can't be slow or fail.
+
+**Install:** same steps as below. Select **"Diagnostic: Streaming Timing
+Test"** as the model, send any message (no file needed), **watch closely
+and time it**.
+
+- **Messages appear one at a time over ~10-12 seconds** → streaming display
+  works fine in this Open WebUI setup. The real pipeline's slowness is
+  genuine backend processing time (the 27B model, OCR, or a large
+  document), not a plumbing bug — tell me this and we'll focus on making
+  the actual work faster instead of the UI.
+- **Nothing appears for a while, then all 6 lines show up at once** →
+  Open WebUI isn't displaying streamed output incrementally in this setup
+  at all, regardless of how the pipe is written — a different, more
+  fundamental problem than the two fixes so far assumed. Tell me this and
+  we'll investigate that instead.
+
+Report back which one you saw — this determines what gets fixed next.
 
 ## 1. `diagnostic_pipe.py` — install and run this first
 
