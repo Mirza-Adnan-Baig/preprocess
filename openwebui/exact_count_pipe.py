@@ -1,7 +1,7 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.4.0
+version: 0.5.0
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
 Open WebUI Pipe Function. Answers questions about an uploaded PDF/CSV/XLSX
@@ -36,6 +36,7 @@ import glob
 import io
 import json
 import os
+import time
 
 import pandas as pd
 from pydantic import BaseModel
@@ -263,10 +264,12 @@ def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str,
         {"role": "user", "content": f"DOCUMENT:\n{context}\n\nQUESTION: {question}"},
     ]
     tools = TOOL_SCHEMAS if df is not None else None
+    max_rounds = 6
 
-    for round_num in range(4):
+    for round_num in range(max_rounds):
         full_content = ""
         tool_calls = None
+        round_start = time.monotonic()
         try:
             stream = client.chat(model=model, messages=messages, tools=tools, stream=True)
             for chunk in stream:
@@ -282,14 +285,14 @@ def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str,
                 + CONNECTION_HELP
             )
             return
+        round_elapsed = time.monotonic() - round_start
 
         messages.append({"role": "assistant", "content": full_content, "tool_calls": tool_calls})
 
         if not tool_calls:
             return  # full_content has already been streamed above
 
-        if round_num < 3:
-            yield "\n\n_(checking the data...)_\n\n"
+        yield f"\n\n_(round {round_num + 1}/{max_rounds}, {round_elapsed:.0f}s — model requested {len(tool_calls)} tool call(s):_\n"
 
         for call in tool_calls:
             name = call["function"]["name"]
@@ -311,9 +314,17 @@ def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str,
             except Exception as exc:
                 result = {"error": str(exc)}
 
+            yield f"_- `{name}({args})` -> `{result}`_\n"
             messages.append({"role": "tool", "content": json.dumps(result, default=str), "tool_name": name})
 
-    yield "\n\nCouldn't reach a final answer within the tool-call budget."
+        yield "_)_\n\n"
+
+    yield (
+        f"\n\nCouldn't reach a final answer within {max_rounds} tool-call rounds — "
+        "see the trace above for what the model tried. If it kept repeating the same "
+        "or similar tool calls without ever giving a plain answer, that's worth reporting "
+        "back (may need a clearer question, or the model needs more rounds for this document)."
+    )
 
 
 # ---------------------------------------------------------------------------
