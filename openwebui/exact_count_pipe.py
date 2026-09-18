@@ -1,7 +1,7 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.6.0
+version: 0.7.0
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
 Open WebUI Pipe Function. Answers questions about an uploaded PDF/CSV/XLSX
@@ -36,6 +36,8 @@ import glob
 import io
 import json
 import os
+import queue
+import threading
 import time
 
 import pandas as pd
@@ -252,6 +254,48 @@ CONNECTION_HELP = (
 )
 
 
+_HEARTBEAT = object()
+_STREAM_DONE = object()
+
+
+def _chat_stream_with_heartbeat(client, model: str, messages: list, tools, heartbeat_seconds: float = 3.0):
+    """Wraps client.chat(..., stream=True) so the caller gets a heartbeat
+    signal every `heartbeat_seconds` while waiting for the next chunk,
+    instead of blocking silently. Ollama has to fully process the prompt
+    (prefill) before emitting the first token — for a large model with a
+    real document, that wait alone can run well past a minute, during
+    which a plain `for chunk in stream:` loop yields nothing at all. That
+    silent gap is what was tripping the disconnect, even though token
+    streaming itself works fine once it starts. Runs the actual HTTP call
+    on a background thread so this generator can keep polling and yielding
+    heartbeats in the meantime."""
+    q: queue.Queue = queue.Queue()
+
+    def worker():
+        try:
+            for chunk in client.chat(model=model, messages=messages, tools=tools, stream=True):
+                q.put(chunk)
+        except Exception as exc:
+            q.put(exc)
+        finally:
+            q.put(_STREAM_DONE)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    while True:
+        try:
+            item = q.get(timeout=heartbeat_seconds)
+        except queue.Empty:
+            yield _HEARTBEAT
+            continue
+        if item is _STREAM_DONE:
+            return
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
 def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str, question: str):
     """Plain (NOT async) generator: yields text chunks as they arrive from
     Ollama, so the connection to the browser stays alive throughout a long
@@ -277,15 +321,21 @@ def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str,
         full_content = ""
         tool_calls = None
         round_start = time.monotonic()
+        first_chunk_seen = False
         try:
-            stream = client.chat(model=model, messages=messages, tools=tools, stream=True)
-            for chunk in stream:
-                piece = chunk.get("message", {}).get("content", "")
+            for item in _chat_stream_with_heartbeat(client, model, messages, tools):
+                if item is _HEARTBEAT:
+                    if not first_chunk_seen:
+                        waited = time.monotonic() - round_start
+                        yield f"_(still thinking, {waited:.0f}s...)_ "
+                    continue
+                first_chunk_seen = True
+                piece = item.get("message", {}).get("content", "")
                 if piece:
                     full_content += piece
                     yield piece
-                if chunk.get("message", {}).get("tool_calls"):
-                    tool_calls = chunk["message"]["tool_calls"]
+                if item.get("message", {}).get("tool_calls"):
+                    tool_calls = item["message"]["tool_calls"]
         except Exception as exc:
             yield (
                 f"\n\nCould not reach Ollama at `{host}` (model `{model}`): {exc}\n\n"
