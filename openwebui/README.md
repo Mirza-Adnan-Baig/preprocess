@@ -1,6 +1,22 @@
-# Open WebUI integration (Phase 1 — not yet verified live)
+# Open WebUI integration (Phase 1)
 
-Three files here, install in this order:
+**Status: verified working end-to-end (2026-09-19)** against a real local
+Open WebUI 0.11.3 instance + real Ollama model — upload → find real file →
+extract → tool-call → exact correct answer, no fallback. Verified on a
+pip-install; **not yet verified on the Mac Studio's specific setup**
+(unclear if it's Docker or pip-install there — see the connection
+troubleshooting doc if `FALLBACK_USED` shows up).
+
+**Before installing anywhere: read the "verify your paste actually
+replaced the old code" note in
+[`../docs/openwebui-connection-troubleshooting.md`](../docs/openwebui-connection-troubleshooting.md).**
+A failed full-selection before pasting an update can silently leave old
+code in the file, appearing to "not apply" the fix — this cost real
+debugging time during verification and is easy to hit again.
+
+Three files here, install in this order (the two diagnostics are optional
+now that the real pipe is confirmed working, but still useful if the Mac
+Studio's setup behaves differently):
 
 ## 0. `streaming_diagnostic_pipe.py` — if the real pipeline hangs/freezes, install this FIRST
 
@@ -78,13 +94,13 @@ Functions. Two valves:
   (short version: Open WebUI running in Docker means `localhost` means the
   container, not the Mac — try `http://host.docker.internal:11434`).
 
-**Verified so far:** the extraction and tool-calling logic itself was
-tested tonight against real synthetic data and a real local model — correct
-answers, confirmed. **Not yet verified:** whether `_find_raw_file_on_disk`
-actually finds your files on the Mac Studio's specific storage setup. If
-every answer comes back with `FALLBACK_USED`, that's the thing to fix next
-— tell me what the diagnostic pipe showed and I'll adjust the file-finding
-logic to match your actual setup.
+**Verified:** end-to-end against a real local Open WebUI instance — file
+found via its own `path` field, extracted, correctly answered via
+`count_rows`, no `FALLBACK_USED`. **Not yet verified:** the Mac Studio's
+specific setup (Docker vs pip-install there is unconfirmed). If every
+answer comes back with `FALLBACK_USED` there, that's the thing to fix next
+— run `diagnostic_pipe.py` there and check what `path` (if anything) it
+reports, and see the connection troubleshooting doc.
 
 ## Why this can't just import the repo's `src/` code directly
 

@@ -1,7 +1,7 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.8.0
+version: 0.8.1
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
 Open WebUI Pipe Function. Answers questions about an uploaded PDF/CSV/XLSX
@@ -9,20 +9,30 @@ document by extracting it into a real table (pandas) and giving the LLM
 tools (count_rows/sum_column/get_row) to compute exact answers, instead of
 letting it guess by reading text.
 
-STATUS: verified live end-to-end (2026-09-19) against a real local Open
-WebUI 0.11.3 instance (pip install) with a real Ollama model — upload,
-extraction, tool-calling, and streaming all confirmed working, exact
-counts correct. The file-finding logic now checks the file record's own
-"path" field first (confirmed present and correct on a pip install), with
-directory-guessing as a fallback for other setups (e.g. Docker) where that
-field may be absent — if it still can't find the file, this pipe falls
-back to whatever text Open WebUI's own document loader already extracted,
-which is weaker (no guaranteed exact counts) — the FALLBACK_USED note in
-every answer tells you which happened. NOT yet verified against the
-specific Mac Studio deployment (Docker vs pip-install there is still
-unconfirmed) — if FALLBACK_USED appears there, check
-docs/openwebui-connection-troubleshooting.md-style diagnostics for that
-environment's actual storage layout.
+STATUS: fully verified live end-to-end (2026-09-19) against a real local
+Open WebUI 0.11.3 instance (pip install) with a real Ollama model. Full
+round-trip confirmed correct: uploaded a synthetic 14-line-item invoice,
+asked "how many line items", got back exactly "14" with NO FALLBACK_USED
+-- meaning the real file was located via its own path, extracted with
+PyMuPDF, and counted via the count_rows tool, not guessed or read from
+Open WebUI's own weaker text extraction. Streaming and the heartbeat
+during model "thinking" time were also confirmed working.
+
+NOT yet verified against the specific Mac Studio deployment (Docker vs
+pip-install there is still unconfirmed) -- if FALLBACK_USED appears there,
+see docs/openwebui-connection-troubleshooting.md for that environment's
+diagnostics.
+
+IMPORTANT for whoever edits this function's code in the Open WebUI admin
+UI: after pasting an update, verify it actually replaced the old content
+rather than appending after it (scroll to the top of the code editor and
+confirm the version number at the top matches what you just pasted, and
+that there's only one "class Pipe:" in the file). A failed full-selection
+before paste can leave old code appended after the new code -- since
+Python executes top-to-bottom, a stale "class Pipe:" appearing later in
+the file will silently override the fix you just tried to apply, with no
+error and no visible sign in the editor. This exact failure mode cost real
+debugging time during initial verification.
 
 Install: Open WebUI admin -> Admin Panel -> Functions -> Create -> paste
 this whole file -> Save -> toggle Active -> select "Exact Count Document

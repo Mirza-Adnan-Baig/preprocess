@@ -14,6 +14,15 @@ Install: Open WebUI admin -> Admin Panel -> Functions -> Create
   - Upload a real invoice/inventory file and ask any question
   - Read the JSON dump it prints back — send it back so the real pipeline
     can be built against what's actually there
+
+Confirmed live (2026-09-19, pip-installed Open WebUI 0.11.3): file_info
+includes a "path" key pointing directly at the stored upload, and
+os.path.isfile() on it returns True from inside the pipe call — this is
+what exact_count_pipe.py now uses first (see its _find_raw_file_on_disk).
+If a different environment (e.g. Docker on the Mac Studio) reports
+path=null or path_isfile=false here, that confirms the real pipe will
+need its directory-guessing fallback instead, and this report's other
+fields (file_dict_keys, meta) are the next thing to inspect.
 """
 
 import json
@@ -29,7 +38,7 @@ class Pipe:
         self.name = "Diagnostic: File Inspector"
         self.valves = self.Valves()
 
-    async def pipe(self, body: dict, __files__: list = None, __user__: dict = None) -> str:
+    def pipe(self, body: dict, __files__: list = None, __user__: dict = None) -> str:
         report = {
             "body_top_level_keys": list(body.keys()),
             "num_files": len(__files__) if __files__ else 0,
@@ -46,6 +55,9 @@ class Pipe:
                     "top_level_keys": list(f.keys()),
                     "file_dict_keys": list(file_info.keys()),
                     "filename": file_info.get("filename"),
+                    "path": file_info.get("path"),
+                    "path_isfile": __import__("os").path.isfile(file_info.get("path") or ""),
+                    "id": file_info.get("id"),
                     "meta": file_info.get("meta"),
                     "content_type": type(content).__name__,
                     "content_length": len(content) if content else 0,

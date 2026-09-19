@@ -1,5 +1,32 @@
 # Fixing Open WebUI pipeline problems: connection errors, hanging, and freezing
 
+## Symptom: you edited the function's code, saved, but the OLD behavior persists
+
+**Check this first if a fix "didn't work" — it's the single most likely cause,
+confirmed during verification (2026-09-19).**
+
+When you paste updated code into Admin Panel → Functions → (the function) →
+code editor, the editor needs to fully select and replace the OLD content
+before your paste lands. If the "select all" doesn't grab the *entire*
+document (this can happen with large files in some editors), your paste
+gets inserted alongside the old code instead of replacing it — both
+versions end up in the same file. Since Python runs a file top-to-bottom,
+whichever `class Pipe:` appears **later** in the file silently wins, even
+if it's the old, buggy one. Nothing in the UI warns you this happened.
+
+**How to check:** open the function's code editor, scroll to the very
+bottom, and confirm there's only one `class Pipe:` in the whole file (use
+Ctrl+F in the editor, or just read to the end). If you see two, the fix
+never actually applied — delete everything in the editor manually (select
+each line down to nothing, don't rely on a single "select all" for very
+long files) and paste the correct version fresh.
+
+**Faster and more reliable alternative:** delete the function entirely
+(Admin Panel → Functions → the function → Function Menu → Delete) and
+re-create it from scratch with **Create**, pasting the current version.
+A fresh create can't have this leftover-old-code problem the way an
+in-place edit can.
+
 ## Symptom: it hangs forever / browser shows "connection lost" / never finishes
 
 **This was a real Open WebUI bug, not a document-parsing or Ollama problem.**
