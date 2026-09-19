@@ -1,7 +1,7 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.7.0
+version: 0.8.0
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
 Open WebUI Pipe Function. Answers questions about an uploaded PDF/CSV/XLSX
@@ -9,13 +9,20 @@ document by extracting it into a real table (pandas) and giving the LLM
 tools (count_rows/sum_column/get_row) to compute exact answers, instead of
 letting it guess by reading text.
 
-STATUS: best-effort, NOT verified against a live Open WebUI instance yet.
-Run diagnostic_pipe.py FIRST and confirm what Open WebUI actually gives us
-for an uploaded file before trusting this. The core uncertainty: this pipe
-tries to find the ORIGINAL uploaded file on disk (needed for real table
-extraction); if that fails, it falls back to whatever text Open WebUI's own
-document loader already extracted, which is weaker (no guaranteed exact
-counts) — the FALLBACK_USED note in every answer tells you which happened.
+STATUS: verified live end-to-end (2026-09-19) against a real local Open
+WebUI 0.11.3 instance (pip install) with a real Ollama model — upload,
+extraction, tool-calling, and streaming all confirmed working, exact
+counts correct. The file-finding logic now checks the file record's own
+"path" field first (confirmed present and correct on a pip install), with
+directory-guessing as a fallback for other setups (e.g. Docker) where that
+field may be absent — if it still can't find the file, this pipe falls
+back to whatever text Open WebUI's own document loader already extracted,
+which is weaker (no guaranteed exact counts) — the FALLBACK_USED note in
+every answer tells you which happened. NOT yet verified against the
+specific Mac Studio deployment (Docker vs pip-install there is still
+unconfirmed) — if FALLBACK_USED appears there, check
+docs/openwebui-connection-troubleshooting.md-style diagnostics for that
+environment's actual storage layout.
 
 Install: Open WebUI admin -> Admin Panel -> Functions -> Create -> paste
 this whole file -> Save -> toggle Active -> select "Exact Count Document
@@ -176,12 +183,24 @@ def _ocr_page(page) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Locating the original uploaded file on disk (the uncertain part — see the
-# module docstring). Tries a few common Open WebUI storage layouts; if none
-# match, the pipe falls back to Open WebUI's own pre-extracted text.
+# Locating the original uploaded file on disk. Confirmed live (2026-09-19,
+# pip-installed Open WebUI 0.11.3): the file record Open WebUI hands us
+# already includes the exact stored path in file_info["path"] -- no need to
+# guess a directory layout in that case. Kept the directory-guessing
+# fallback (including a pip-install-aware open_webui-package-relative path,
+# also confirmed live) for older versions or storage backends that don't
+# populate "path".
 # ---------------------------------------------------------------------------
 
-def _find_raw_file_on_disk(file_id: str, filename: str) -> bytes | None:
+def _find_raw_file_on_disk(file_info: dict) -> bytes | None:
+    direct_path = file_info.get("path")
+    if direct_path and os.path.isfile(direct_path):
+        with open(direct_path, "rb") as f:
+            return f.read()
+
+    file_id = file_info.get("id", "")
+    filename = file_info.get("filename", "")
+
     candidate_dirs = [
         os.environ.get("UPLOAD_DIR", ""),
         os.environ.get("DATA_DIR", ""),
@@ -189,6 +208,14 @@ def _find_raw_file_on_disk(file_id: str, filename: str) -> bytes | None:
         "./data/uploads",
         "../data/uploads",
     ]
+    try:
+        import open_webui
+        candidate_dirs.append(
+            os.path.join(os.path.dirname(open_webui.__file__), "data", "uploads")
+        )
+    except ImportError:
+        pass
+
     candidate_patterns = [
         f"{file_id}*",
         f"{file_id}_{filename}",
@@ -413,7 +440,7 @@ class Pipe:
 
         yield "_(extracting document...)_\n\n"
 
-        raw_bytes = _find_raw_file_on_disk(file_id, filename)
+        raw_bytes = _find_raw_file_on_disk(file_info)
         fallback_used = raw_bytes is None
 
         try:
