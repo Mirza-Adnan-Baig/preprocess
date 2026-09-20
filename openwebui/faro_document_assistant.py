@@ -942,9 +942,14 @@ SYSTEM_PROMPT = (
     "oder den Wert aus FAKTEN._zusammenfassung übernehmen.\n"
     "5. Inhaltliche Fragen (Worum geht es? Wer ist der Absender? Was steht in "
     "Abschnitt 4?) direkt aus dem Dokumenttext beantworten.\n"
-    "6. Steht die Antwort nicht im Dokument, sage genau das: "
-    "„Das steht nicht im Dokument.“ Nichts erfinden.\n"
-    "7. Antworte auf Deutsch, in ganzen Sätzen, knapp."
+    "6. Steht die Antwort nicht im Dokument, sage genau das (in der Sprache "
+    "der Frage, z. B. „Das steht nicht im Dokument.“ auf Deutsch oder "
+    "„That is not in the document.“ auf Englisch). Nichts erfinden.\n"
+    "7. Antworte in der Sprache, in der die Frage gestellt wurde -- Deutsch "
+    "bei einer deutschen Frage, Englisch bei einer englischen Frage, "
+    "ebenso in jeder anderen Sprache. Nicht die Sprache des Dokuments "
+    "annehmen, wenn die Frage in einer anderen Sprache gestellt wurde. "
+    "In ganzen Sätzen, knapp."
 )
 
 
