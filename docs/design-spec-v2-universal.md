@@ -1,0 +1,378 @@
+# FARO Universal Document Understanding — Design Spec
+
+**Date:** 2026-09-20
+**Supersedes:** `2026-09-18-local-llm-document-preprocessing-design.md` (Phase 0)
+**Status:** Approved for implementation planning
+
+## 1. Why this exists
+
+Phase 0 proved the core idea: never let the LLM count, give it code-computed
+answers through tool calls. That idea holds. This spec replaces the delivery
+around it, because three things turned out to be wrong.
+
+**The pipeline produces silently wrong numbers for German documents.** Every
+user of this system is German, and every document is German. Today the numeric
+parser treats `1.234` as the float `1.234`. A column of `1.234 / 2.500 / 750`
+sums to `753,734` instead of `4.484`, and `12,00` is discarded as "not a
+number," which drops the column from every calculation. Measured, not
+theorized. This is the exact failure mode the project was built to prevent,
+inverted: confidently wrong output produced by the deterministic layer that was
+supposed to be the trustworthy one.
+
+**Open WebUI was corrupting the input before our code ran.** When a file is
+attached, Open WebUI's built-in file RAG replaces the user's question with its
+own ~3.4 KB citation-prompt template plus its own independently-chunked
+retrieval of the same file. The pipe received that template instead of the real
+question. This is controlled by a per-model capability, `file_context`, which
+defaults to on, and it applies to any model including custom Pipe functions.
+With it enabled, a document containing one table was described as having "three
+distinct tables." With it disabled, the same question answered correctly. No
+error was raised in either case.
+
+**The test corpus was fiction.** Every fixture was a clean PDF generated with
+reportlab: uniform columns, no merged cells, no totals row, no scans, no
+umlauts, one table type per file. Real documents are 400+ lines, several
+documents merged into one upload, and arrive as Excel, CSV, images and
+photographs as often as PDF.
+
+## 2. Goals
+
+1. Correct answers on German documents, or an honest refusal. Never a
+   confident wrong number.
+2. Accept what users actually upload: PDF (digital, scanned, mixed), XLSX,
+   XLS, CSV, images, DOCX, PPTX, plain text, email.
+3. Answer what users actually ask: counts and sums, but equally lookups,
+   field extraction, summaries, and "what does this say."
+4. Install on any Open WebUI instance without undocumented manual steps.
+5. Run air-gapped, with no shell access on the target machine.
+
+## 3. Non-goals
+
+- Multi-turn document sessions or persistence across chats. One upload, one
+  conversation.
+- Editing or generating documents. Read-only.
+- Replacing Open WebUI's general chat. This model is for document questions.
+- Training or fine-tuning anything.
+
+## 4. Hard constraints
+
+These were verified against the live Open WebUI 0.11.3 install, not assumed.
+
+**Deployment is Admin Panel → Functions only.** No shell on the Mac Studio, no
+background services, no system packages. The deliverable is a single Python
+file pasted into a web form. This is a current access limitation, expected to
+relax later; the design must not have to be rewritten when it does.
+
+**No pip installs may be required.** The Mac Studio is air-gapped, so a
+`requirements:` frontmatter line that needs PyPI is a failure mode. It is also
+unnecessary: Open WebUI's own environment already provides `pandas`,
+`openpyxl`, `xlrd`, `pymupdf`, `PIL`, `python-docx`, `python-pptx`, `bs4`,
+`lxml`, `chardet`, `charset_normalizer`, `ftfy`, `numpy`, `onnxruntime`,
+`tabulate`, and `ollama`. The bundle declares no requirements and imports only
+from this set plus the standard library.
+
+**Tesseract is unavailable.** `pytesseract` is installed but the binary is not,
+and installing it needs shell access. OCR must come from a vision model served
+by Ollama. The admin can install such a model through Open WebUI's own model UI,
+which uses the `/ollama/api/pull` endpoint and needs no shell.
+
+**`file_context` must be disabled for this model.** Otherwise the pipe receives
+Open WebUI's rewritten prompt instead of the user's question. See §12.
+
+## 5. Architecture
+
+One tested core library, thin adapters, and a generated single-file artifact.
+
+```
+src/faro_docs/
+  ingest/          format router and per-format readers
+  german.py        encoding, delimiters, numbers, dates, header vocabulary
+  tables.py        table discovery, header detection, totals-row handling
+  facts.py         deterministic computation over tables
+  answer.py        question routing, tool loop, honesty layer
+  messages_de.py   all user-facing German text
+adapters/
+  openwebui_pipe.py    __files__ in, streamed text out          (now)
+  mcp_server.py        same core over streamable HTTP           (later)
+tools/
+  build_bundle.py      flattens core + adapter into one file
+  setup_openwebui.py   applies the file_context fix via API
+tests/
+  corpus/              real messy public German documents
+```
+
+The file pasted into Functions is **generated by `build_bundle.py`, never edited
+by hand.** Today `openwebui/exact_count_pipe.py` duplicates the logic in `src/`,
+and the two drift; a build step removes that class of bug entirely. The bundle
+is committed so it can be copied from GitHub without running anything.
+
+Adapters contain no document logic. When shell access arrives, `mcp_server.py`
+exposes the same core functions as MCP tools over streamable HTTP — the only
+transport Open WebUI 0.11.3 supports — and no extraction code changes.
+
+**Interfaces between units.** `ingest` returns a `Document` (file name, media
+type, full text, list of `Table`, per-page provenance). `tables` returns
+`Table` objects (id, human label, DataFrame, column metadata including the
+numeric format decision, totals-row indices). `facts` consumes `Table` and
+returns computed values with provenance. `answer` consumes `Document` and a
+question and returns a stream of text. Each unit is testable without the others.
+
+## 6. Ingestion
+
+A router dispatches on detected type, using content sniffing rather than the
+file extension alone, since users rename files.
+
+| Input | Handling |
+|---|---|
+| PDF, digital text | PyMuPDF text plus table detection per page |
+| PDF, scanned | Per-page render → vision model OCR (§10) |
+| PDF, mixed | Per-page decision; digital and OCR pages both retained, each tagged |
+| XLSX / XLSM | **Every sheet** becomes its own table, `sheet:<name>` |
+| XLS (legacy) | Same, via `xlrd` |
+| CSV / TSV / TXT-tabular | Encoding and delimiter detection (§7) |
+| Images (PNG/JPG/WEBP/TIFF) | Vision model OCR |
+| DOCX | Paragraph text plus embedded tables |
+| PPTX | Slide text, per-slide provenance |
+| EML | Stdlib `email`: headers, body, and recursion into attachments |
+| Plain text / HTML | Direct; HTML via `bs4` |
+| Anything else | Loud German refusal naming the type (§11) |
+
+**All uploaded files are processed, not just the first.** Today only
+`__files__[0]` is read and the remainder vanish without a word. Each file
+becomes a `Document` with its own tables and facts, and table ids are namespaced
+per document so cross-document questions are answerable and unambiguous.
+
+## 7. The German layer
+
+**Encoding.** Try UTF-8 with BOM, then `charset_normalizer`/`chardet`
+detection, then cp1252. Run `ftfy` over the result to repair mojibake, so
+`Straße` mangled to `StraÃŸe` is recovered rather than shown to the user.
+
+**Delimiters.** German Excel exports CSV with `;`. Candidates are `;`, `,`,
+`\t`, `|`, chosen by consistency of field count across the first rows rather
+than `csv.Sniffer` alone, which is unreliable on files with preamble junk.
+
+**Numbers — decided per column, never per cell.** This is the critical
+correctness fix. For each column, classify all non-empty values:
+
+- `1.234,56` (dot groups of exactly 3, then comma) → German. Strip dots,
+  comma becomes decimal point.
+- `12,00` or `0,5` (comma, no dots) → German decimal comma.
+- `1,234.56` → English. Strip commas.
+- `1 234,56` including non-breaking and narrow spaces → German.
+- Bare `1.234` with no other evidence → **ambiguous**: 1234 or 1.234.
+  Resolved at column level by this order: (a) if any cell in the column
+  carries a decimal comma, or every dotted value has exactly three trailing
+  digits, read as German thousands; (b) else if any cell anywhere in the
+  document uses unambiguous English format (`1,234.56`), read as English;
+  (c) else default to German thousands. The rule that applied is
+  **recorded on the column** in every case.
+- Also handled: leading/trailing `€`/`EUR`, trailing minus `1.234,56-`,
+  parenthesised negatives, thin-space grouping.
+
+The chosen interpretation is stored on the column and surfaced in provenance,
+so a sum can always be explained. Where a column is genuinely ambiguous and the
+answer depends on it, the ambiguity is stated rather than hidden.
+
+**Dates.** `31.12.2026`, `31.12.26`, `2026-12-31`, and month names
+(`Dezember`, `Dez`). Stored as ISO internally, rendered German to the user.
+
+**Header vocabulary.** Matching is diacritic- and case-insensitive and covers
+the terms these documents actually use: `Menge`, `Anzahl`, `Stück`,
+`Stückzahl`, `Pos.`, `Position`, `Artikel`, `Artikelnummer`, `Bezeichnung`,
+`Beschreibung`, `Einzelpreis`, `Preis`, `Betrag`, `Summe`, `Gesamt`,
+`Gesamtpreis`, `Netto`, `Brutto`, `MwSt`, `USt`, `Steuer`, `Rabatt`,
+`Lieferdatum`, `Rechnungsnummer`, `Kunde`, `Lieferant`, alongside their
+English equivalents.
+
+**Output language.** German by default, in the system prompt and in every
+message the pipe itself emits. If the user writes in another language, the
+model answers in that language; the pipe's own status and error text stays
+German unless the `RESPONSE_LANGUAGE` valve says otherwise.
+
+## 8. Tables
+
+**Discovery.** Multiple distinct tables per document are kept separately,
+grouped by matching header so a table spanning pages merges while genuinely
+different tables stay apart — the Phase 0 behaviour, retained. Excel sheets are
+always distinct tables regardless of header similarity.
+
+**Header detection.** Scan the first rows for the one that looks most like a
+header: mostly non-empty, mostly non-numeric, and scoring higher when cells
+match the German header vocabulary. Preamble rows above it (company address,
+invoice title) are kept as document text, not silently deleted.
+
+**Totals rows.** A row is treated as a total when its label cell matches
+`gesamt|summe|zwischensumme|endbetrag|netto|brutto|mwst|ust|steuer|total`, or
+when a numeric cell equals the sum of the values above it within 0.5 % or
+0,02 absolute, whichever is larger — the tolerance absorbs rounding in
+printed invoices without matching by coincidence.
+Totals rows are **excluded from row counts and from sums by default**, and the
+exclusion is stated in the answer. Including a `Gesamt` row in a `SUM` is a
+silent doubling, and it is the single most likely wrong answer on a real
+invoice.
+
+**Structural noise.** Merged cells are forward-filled, fully empty rows and
+columns dropped, repeated header rows inside the body removed, and columns with
+no header given positional names rather than being discarded.
+
+## 9. Facts, tools, and question routing
+
+**Facts** are computed in code for every table on ingest: row count (excluding
+totals rows), and per column the sum, min, max, mean, and distinct count with
+its numeric-format decision. Cross-table and cross-document totals are computed
+in code too, because asking the model to add two numbers it can see is a
+demonstrated source of error — it answered 430 for 250 + 200.
+
+**Tools** exposed to the model: `list_documents`, `list_tables`, `count_rows`,
+`sum_column`, `get_row`, `find_rows` (filtered search), and `get_text_section`.
+All take an explicit document and table id.
+
+**Question routing.** The model decides, steered by a system prompt that
+distinguishes classes explicitly:
+
+- *Quantitative* (wie viele, Summe, Gesamt, Durchschnitt, how many over X) —
+  a tool call is mandatory; answering from memory of the text is forbidden.
+- *Structural* (how many tables, which sheets, how many pages) — must call
+  `list_tables` / `list_documents`. This was added after the model invented
+  "three distinct tables" for a one-table document.
+- *Lookup* (price for article X, what is in row 12) — `find_rows` / `get_row`.
+- *Field extraction* (Rechnungsnummer, Lieferdatum, Absender) — from text,
+  with the surrounding snippet quoted as evidence.
+- *Summary / free-text* — answered from the document text directly.
+- *Not answerable from the document* — must say
+  „Das steht nicht im Dokument" rather than infer.
+
+**Honesty layer.** Every answer ends with a short German provenance line
+stating where the numbers came from: computed from the table, read from the
+text, or read via OCR and therefore uncertain. When extraction degraded — OCR
+used, only part of a long text searched, an ambiguous number format, a totals
+row excluded — that is stated in the answer, not buried.
+
+## 10. OCR through Ollama
+
+A page is treated as scanned when its extracted text is under a threshold and
+the page is largely covered by images. Such pages are rendered at 200 DPI by
+PyMuPDF and sent to a vision model through the bundled `ollama` client, with a
+German instruction to transcribe verbatim, preserve table structure as
+pipe-delimited rows, and mark unreadable regions rather than guess.
+
+The model is set by a `VISION_MODEL` valve. If it is unset or not present in
+Ollama, OCR is skipped and the user is told, in German, that the document
+appears to be a scan, that no vision model is configured, and which admin
+setting fixes it — instead of returning an empty extraction that looks like an
+empty document.
+
+OCR output is always tagged as OCR provenance. Tables recovered by OCR are
+usable by the tools, but every answer derived from them is labelled uncertain,
+because a misread digit is invisible downstream.
+
+`MAX_OCR_PAGES` bounds the work; beyond it, OCR covers the first N pages and
+the answer says so.
+
+## 11. Errors
+
+Errors are user-facing German sentences naming what failed and what to do, not
+Python tracebacks. Handled explicitly: password-protected PDF, corrupt or
+truncated file, unsupported type, empty document, no table found when the
+question needs one, Ollama unreachable, model not installed, and file too large.
+
+A Python-level exception anywhere in ingestion degrades to the next strategy
+rather than aborting: table extraction failing still leaves full text; text
+extraction failing still leaves OCR. Only total failure produces a refusal, and
+it names the file that failed.
+
+## 12. Open WebUI integration
+
+**Disabling `file_context` is mandatory.** Two mechanisms, because a manual
+step nobody remembers is how this bug survived:
+
+1. `tools/setup_openwebui.py` performs it over the API: create or update the
+   workspace model entry for this pipe's id with
+   `meta.capabilities.file_context = false`, then `GET /api/models?refresh=true`,
+   since the model cache is otherwise only loaded lazily and the change appears
+   to do nothing.
+2. **The pipe self-detects.** Open WebUI's injected template is recognisable.
+   When the incoming message matches it, the pipe emits a prominent German
+   warning naming the exact fix, and recovers the user's real question from
+   inside the template so the answer is still usable. An invisible failure
+   becomes a visible one.
+
+**Streaming.** A plain synchronous generator, not `async`: Open WebUI does not
+reliably signal completion for async-generator pipes (open-webui#20196), which
+leaves the UI spinning forever. A background thread plus a queue emits a
+heartbeat while Ollama prefills a long document, because a silent gap trips the
+connection drop seen at the office. Both behaviours are carried over from
+Phase 0, where they were verified to fix real symptoms.
+
+**Valves.** `MODEL`, `VISION_MODEL`, `OLLAMA_HOST`, `RESPONSE_LANGUAGE`
+(default `de`), `MAX_OCR_PAGES`, `MAX_TEXT_CHARS`. `OLLAMA_HOST` defaults to
+auto-detection: Open WebUI's own configured Ollama URL from its environment,
+then `localhost`, then `host.docker.internal` for containerised installs. A
+wrong Ollama host was the top support issue in Phase 0 and should not require
+knowing the answer in advance.
+
+## 13. Long documents
+
+Tables are never truncated: tools compute over the full DataFrame regardless of
+size, so a 50,000-row sheet still yields exact counts.
+
+Text is bounded by `MAX_TEXT_CHARS`. Beyond it, the pipe retrieves the passages
+relevant to the question itself — our own retrieval over our own extraction, not
+Open WebUI's — and states that only part of the text was searched. Silent
+truncation is prohibited; a summary of a document where half the text was
+dropped without saying so is a wrong answer wearing a plausible face.
+
+## 14. Testing
+
+**Corpus.** Real, messy, public German documents collected from the web:
+Musterrechnungen, Lieferscheine, scanned forms, government PDFs, German CSV
+exports with `;` and decimal commas, multi-sheet spreadsheets. Synthetic
+fixtures are permitted only for cases that cannot be sourced publicly, and are
+labelled as such. The synthetic clean-PDF corpus is why this passed locally and
+failed at the office.
+
+**Golden tests.** Each corpus document has expected facts — table count, row
+counts, key sums — asserted against the extractor. These are the regression
+suite.
+
+**Unit tests.** `german.py` is table-driven over a wide list of real German
+numeric and date strings, including every ambiguous case in §7, and asserts the
+*recorded decision*, not only the value.
+
+**No mocked extraction.** Tests run the real parsers over real bytes. Only the
+Ollama calls are stubbed, and there is one live end-to-end test against the
+local instance.
+
+**Manual verification through the actual UI** remains required before anything
+is called done. Scripted verification passed while the live UI was broken,
+because the breakage lived in Open WebUI's request path, not in our code.
+
+## 15. Phasing
+
+**Phase 1 — Correctness (first).** The core library skeleton, `german.py` with
+per-column number format decisions, multi-sheet Excel, totals-row handling,
+all-files-not-just-the-first, encoding and delimiter detection, provenance and
+the honesty layer, `file_context` self-detection and the setup script, the
+build-bundle workflow, and the golden corpus for formats already supported.
+This phase removes every known silent-wrong-answer path.
+
+**Phase 2 — Formats.** Vision OCR for scanned PDFs and images, mixed-mode
+PDFs, DOCX, PPTX, EML, HTML, plus corpus and golden tests for each.
+
+**Phase 3 — Understanding.** Intent routing, field extraction with quoted
+evidence, summaries, `find_rows`, and the long-document retrieval strategy.
+
+**Phase 4 — MCP.** The `mcp_server.py` adapter over streamable HTTP, once shell
+access on the Mac Studio exists. No core changes expected; if any are needed,
+that is a signal the adapter boundary was drawn wrong.
+
+## 16. Open questions
+
+- Whether the Mac Studio's Open WebUI is a Docker or pip install. It changes
+  the Ollama host default and the upload path, and auto-detection is designed
+  to cover both, but it remains unverified there.
+- Which vision model fits alongside the 27B text model in 64 GB. To be
+  measured, not guessed, once a model can be installed.
+- Whether `.msg` (Outlook) files appear in practice. The library for it is not
+  bundled, and supporting it would need the first real pip dependency.

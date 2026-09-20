@@ -1,7 +1,7 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.9.0
+version: 0.9.2
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
 Open WebUI Pipe Function. Answers questions about an uploaded document of
@@ -19,41 +19,92 @@ with a real Ollama model -- uploaded a synthetic 14-line-item invoice,
 asked "how many line items", got back exactly "14" with NO FALLBACK_USED.
 Streaming and the heartbeat during model "thinking" time confirmed
 working. The multi-table extraction (list_tables + per-table tool calls)
-and full-text-always inclusion are new in v0.9.0, prompted by real
-feedback that actual documents are much larger (400+ rows) and often
-several distinct documents merged into one upload. Verified directly
-(scripted, not yet through the Open WebUI UI after this specific rewrite
--- re-run the same manual test there before trusting it fully confirmed
-again) with synthetic 250+200-row two-table stress tests:
+and full-text-always inclusion (v0.9.0) are now ALSO verified live
+through the actual Open WebUI chat UI (v0.9.0/0.9.1 pushed via the
+REST-API update method, not browser paste), with synthetic 250+200-row
+two-table stress tests:
   - Different-header tables (e.g. two shipments with different columns):
     correctly kept as separate tables, not merged or silently dropped.
-    Cross-table total ("how many rows in total") now correct (450) via a
+    Cross-table total ("how many rows in total") correct (450) via a
     code-computed FACTS._summary.total_rows_all_tables -- earlier, before
     that fix, the small test model added the two per-table counts itself
     and got it WRONG (430) despite having the right numbers in front of
     it, which is exactly the kind of mistake tool-calling exists to avoid.
-  - Same-header tables: still correctly merge into one combined table
-    (unchanged behavior, appropriate when both sections really are one
-    logical table split across the file).
+    Confirmed live through the UI: "450 rows... table_1... table_2" with
+    correct column names for each.
+  - Same-header tables: correctly merge into one combined table (1 table,
+    450 rows -- confirmed via direct script run against the real
+    extractor). BUT found live through the UI (2026-09-20): asked "how
+    many rows total, and how many distinct tables are there?" -- got the
+    row count right (450) but the table count WRONG ("three different
+    tables" vs the actual 1). A prompt tweak alone (v0.9.1, requiring
+    list_tables for table-count questions) did NOT fix it -- the model
+    still answered wrong afterward. Root-caused with a temporary debug
+    build that printed the raw `user_message` this pipe actually
+    receives: **Open WebUI's own built-in file RAG was silently
+    rewriting the last user message before this pipe ever saw it** --
+    replacing the real question with its own ~3.4K-char citation-prompt
+    template plus independently-chunked retrieval from the same file,
+    completely bypassing this pipe's own extraction. This happens for
+    ANY selected model (custom Pipe or not) whenever a file is attached,
+    unless the model explicitly opts out, because Open WebUI's per-model
+    capability `file_context` defaults to True. FIXED (v0.9.2) by
+    creating a Workspace Model override for this pipe's id with
+    `meta.capabilities.file_context = False` (see CRITICAL DEPLOYMENT
+    STEP below) -- re-verified live afterward: the pipe now receives the
+    real short question (confirmed via the same debug build: `user_message`
+    was just the `<attached_files>` tag plus the literal question, no RAG
+    template), and the model correctly answered "1 distinct table, 450
+    rows." This was a real, previously-undiscovered architecture gap that
+    had nothing to do with this pipe's own extraction/tool-calling logic
+    -- it explains why free-text/qualitative answers were sometimes
+    unreliable even though the raw extraction was already verified
+    correct in isolation.
+  - Qualitative recall on a long, table-dense document: earlier testing
+    (v0.9.0/0.9.1) that found the small test model (qwen2.5:7b) sometimes
+    failed to name companies mentioned in the text was very likely
+    ALSO downstream of this same file_context RAG interference (the
+    model was partly answering from Open WebUI's own retrieved chunks,
+    not this pipe's full-text context). Worth re-confirming this
+    specific question is now consistently correct with file_context
+    disabled, and still worth re-checking against the actual production
+    model (Qwen3.6-27B) before fully trusting "any document, extract the
+    understanding" on genuinely long, dense files -- exact counts via
+    tool-calling were never affected by this, since those don't depend on
+    the model reading prose.
 
-KNOWN LIMITATION, found during this same testing, not yet solved: on a
-long, table-dense document (~40K characters, mostly repetitive rows),
-the small local test model (qwen2.5:7b) failed a simple qualitative
-question ("what company names are mentioned?") even though the answer
-was verifiably present in the text sent to it -- it appears to anchor on
-the compact FACTS block and effectively ignore prose diluted inside a
-much larger wall of table text. This is a model-capability question, not
-a bug in the code (verified the correct text really is in the prompt) --
-it needs to be re-tested with the actual production model (Qwen3.6-27B,
-which should have meaningfully better long-context recall than a small
-7B model) before trusting "any document, extract the understanding"
-questions on genuinely long, dense files. Exact counts via tool-calling
-are unaffected by this -- those don't depend on the model reading prose.
+CRITICAL DEPLOYMENT STEP -- required on every Open WebUI instance this
+pipe is installed on, including the Mac Studio, or file-based questions
+will silently get corrupted context: Open WebUI's built-in file RAG
+(the `file_context` model capability, default True) intercepts every
+attached file and rewrites the user's last message into its own
+citation-prompt template before ANY pipe function runs, regardless of
+this file being handled correctly by `_find_raw_file_on_disk` /
+`_extract_pdf_bytes` etc. This must be disabled for this specific model
+id, once, after installing/updating this function:
+  1. Sign in as admin, then call (or use Admin Panel > Models UI once
+     that capability toggle is exposed there):
+     POST /api/v1/models/create
+     {"id": "exact_count_document_assistant",
+      "name": "Exact Count Document Assistant",
+      "meta": {"capabilities": {"file_context": false}},
+      "params": {}, "is_active": true}
+     (If a Models entry with this id already exists, use
+     POST /api/v1/models/model/update instead of /create.)
+  2. Force the server to pick it up immediately (it otherwise only
+     reloads this cache lazily): GET /api/models?refresh=true
+Without this, `__files__` is still delivered correctly to this pipe
+(so exact counts via tool-calling still work, since those never depend
+on the literal question text), but the free-text `user_message` the
+pipe uses to steer qualitative answers may be Open WebUI's own rewritten
+RAG prompt instead of the real question -- producing plausible-looking
+but wrong free-text answers with no visible error anywhere.
 
 NOT yet verified against the specific Mac Studio deployment (Docker vs
-pip-install there is still unconfirmed) -- if FALLBACK_USED appears there,
-see docs/openwebui-connection-troubleshooting.md for that environment's
-diagnostics.
+pip-install there is still unconfirmed, and the file_context override
+above has not yet been applied/tested there) -- if FALLBACK_USED appears
+there, see docs/openwebui-connection-troubleshooting.md for that
+environment's diagnostics.
 
 IMPORTANT for whoever edits this function's code in the Open WebUI admin
 UI: after pasting an update, verify it actually replaced the old content
@@ -369,10 +420,14 @@ SYSTEM_PROMPT = (
     "count_rows with table='all') for a whole-document row count. Never "
     "add up individual table counts yourself by hand — that arithmetic is "
     "exactly the kind of mistake this tool-calling design exists to avoid.\n\n"
-    "For any question involving counting, summing, or totals on tabular "
-    "data, you MUST call the matching tool rather than counting or adding "
-    "numbers yourself — the tools compute exact values from the real data; "
-    "your own counting over text is not reliable enough for this task. For "
+    "For any question involving counting, summing, totals, or the NUMBER "
+    "OF TABLES/DOCUMENTS in the file, you MUST call the matching tool "
+    "(list_tables for how-many-tables questions) rather than counting or "
+    "guessing yourself — the tools reflect the real detected structure; "
+    "your own impression from skimming the text is not reliable enough for "
+    "this task, and guessing a plausible-sounding number of tables when "
+    "you haven't actually called list_tables is exactly the kind of "
+    "confident-but-wrong answer this design exists to avoid. For "
     "qualitative questions (what does this say, summarize this, find X), "
     "answer directly from the document text provided — no tool call needed "
     "for those. Respond in German by default, matching the language of the "
