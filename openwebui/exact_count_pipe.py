@@ -1,22 +1,54 @@
 """
 title: Exact Count Document Assistant
 author: Mirza
-version: 0.8.1
+version: 0.9.0
 requirements: pandas, openpyxl, tabulate, pymupdf, pytesseract, Pillow, ollama
 
-Open WebUI Pipe Function. Answers questions about an uploaded PDF/CSV/XLSX
-document by extracting it into a real table (pandas) and giving the LLM
-tools (count_rows/sum_column/get_row) to compute exact answers, instead of
-letting it guess by reading text.
+Open WebUI Pipe Function. Answers questions about an uploaded document of
+ANY kind -- not just invoices. Extracts every distinct table it can find
+(a single upload can legitimately contain more than one, e.g. two
+invoices merged into one scan) into real pandas tables, gives the LLM
+tools to compute exact counts/sums against them instead of guessing, and
+always includes the full document text so it can also answer general
+questions (summarize this, what does clause 4 say, who is the sender)
+that have nothing to do with counting.
 
-STATUS: fully verified live end-to-end (2026-09-19) against a real local
-Open WebUI 0.11.3 instance (pip install) with a real Ollama model. Full
-round-trip confirmed correct: uploaded a synthetic 14-line-item invoice,
-asked "how many line items", got back exactly "14" with NO FALLBACK_USED
--- meaning the real file was located via its own path, extracted with
-PyMuPDF, and counted via the count_rows tool, not guessed or read from
-Open WebUI's own weaker text extraction. Streaming and the heartbeat
-during model "thinking" time were also confirmed working.
+STATUS (2026-09-19/20): core single-table path fully verified live
+end-to-end against a real local Open WebUI 0.11.3 instance (pip install)
+with a real Ollama model -- uploaded a synthetic 14-line-item invoice,
+asked "how many line items", got back exactly "14" with NO FALLBACK_USED.
+Streaming and the heartbeat during model "thinking" time confirmed
+working. The multi-table extraction (list_tables + per-table tool calls)
+and full-text-always inclusion are new in v0.9.0, prompted by real
+feedback that actual documents are much larger (400+ rows) and often
+several distinct documents merged into one upload. Verified directly
+(scripted, not yet through the Open WebUI UI after this specific rewrite
+-- re-run the same manual test there before trusting it fully confirmed
+again) with synthetic 250+200-row two-table stress tests:
+  - Different-header tables (e.g. two shipments with different columns):
+    correctly kept as separate tables, not merged or silently dropped.
+    Cross-table total ("how many rows in total") now correct (450) via a
+    code-computed FACTS._summary.total_rows_all_tables -- earlier, before
+    that fix, the small test model added the two per-table counts itself
+    and got it WRONG (430) despite having the right numbers in front of
+    it, which is exactly the kind of mistake tool-calling exists to avoid.
+  - Same-header tables: still correctly merge into one combined table
+    (unchanged behavior, appropriate when both sections really are one
+    logical table split across the file).
+
+KNOWN LIMITATION, found during this same testing, not yet solved: on a
+long, table-dense document (~40K characters, mostly repetitive rows),
+the small local test model (qwen2.5:7b) failed a simple qualitative
+question ("what company names are mentioned?") even though the answer
+was verifiably present in the text sent to it -- it appears to anchor on
+the compact FACTS block and effectively ignore prose diluted inside a
+much larger wall of table text. This is a model-capability question, not
+a bug in the code (verified the correct text really is in the prompt) --
+it needs to be re-tested with the actual production model (Qwen3.6-27B,
+which should have meaningfully better long-context recall than a small
+7B model) before trusting "any document, extract the understanding"
+questions on genuinely long, dense files. Exact counts via tool-calling
+are unaffected by this -- those don't depend on the model reading prose.
 
 NOT yet verified against the specific Mac Studio deployment (Docker vs
 pip-install there is still unconfirmed) -- if FALLBACK_USED appears there,
@@ -104,7 +136,39 @@ def _compute_facts(df: pd.DataFrame) -> dict:
     return facts
 
 
-def _extract_tabular_bytes(raw_bytes: bytes, is_csv: bool) -> tuple[pd.DataFrame, dict, str]:
+def _tables_to_facts_and_markdown(tables: dict) -> tuple[dict, str]:
+    """Shared by both extractors: given {table_id: DataFrame}, compute
+    per-table facts and a labeled markdown block for each. Table order is
+    largest-first, but that's just a convenience — the model can address
+    any of them by id (see list_tables), so multi-table documents (e.g.
+    two invoices merged into one upload) don't lose data to whichever
+    table happened to be biggest."""
+    facts = {}
+    blocks = []
+    for table_id, df in tables.items():
+        facts[table_id] = _compute_facts(df)
+        blocks.append(
+            f"### {table_id} (columns: {', '.join(df.columns)})\n\n"
+            + df.to_markdown(index=False)
+        )
+    if len(tables) > 1:
+        # A cross-table total is a compound question (add up several tool
+        # results), and small models are unreliable at even simple mental
+        # arithmetic — so compute the one cross-table number that's always
+        # well-defined (a row count, regardless of differing column names)
+        # here in code, rather than trusting the model to add two FACTS
+        # numbers correctly on its own. Column sums aren't included here
+        # since column names can genuinely differ between tables (e.g.
+        # "Unit Price" vs "Cost") and summing mismatched columns would be
+        # its own silent-wrong-answer risk.
+        facts["_summary"] = {
+            "table_count": len(tables),
+            "total_rows_all_tables": sum(len(df) for df in tables.values()),
+        }
+    return facts, "\n\n".join(blocks)
+
+
+def _extract_tabular_bytes(raw_bytes: bytes, is_csv: bool) -> tuple[dict, dict, str]:
     if is_csv:
         text = None
         for encoding in ("utf-8-sig", "cp1252"):
@@ -134,12 +198,22 @@ def _extract_tabular_bytes(raw_bytes: bytes, is_csv: bool) -> tuple[pd.DataFrame
     df = df.dropna(axis=0, how="all").dropna(axis=1, how="all").reset_index(drop=True)
     df = _normalize_numeric_columns(df)
 
-    facts = _compute_facts(df)
-    markdown = df.to_markdown(index=False)
-    return df, facts, markdown
+    tables = {"table_1": df}
+    facts, markdown = _tables_to_facts_and_markdown(tables)
+    return tables, facts, markdown
 
 
-def _extract_pdf_bytes(raw_bytes: bytes) -> tuple[pd.DataFrame | None, dict, str]:
+def _extract_pdf_bytes(raw_bytes: bytes) -> tuple[dict, dict, str]:
+    """Detects EVERY distinct table in the document (grouped by matching
+    header row across pages, so a table spanning multiple pages still
+    merges correctly) rather than picking only the single largest one.
+    A real-world upload is often more than one logical document merged
+    into a single file (e.g. two invoices scanned together) -- silently
+    keeping only the biggest table would drop the rest, which is exactly
+    the kind of confidently-incomplete answer this project exists to
+    avoid. Full page text is always included (not just a short preview)
+    so the model can also answer non-tabular questions about the
+    document's actual content, not just counts."""
     import fitz  # PyMuPDF
 
     doc = fitz.open(stream=raw_bytes, filetype="pdf")
@@ -164,22 +238,21 @@ def _extract_pdf_bytes(raw_bytes: bytes) -> tuple[pd.DataFrame | None, dict, str
         facts = {"page_count": len(doc)}
 
         if not table_groups:
-            return None, facts, full_text
+            return {}, facts, full_text
 
-        header, body = max(table_groups.items(), key=lambda kv: len(kv[1]))
-        df = pd.DataFrame(body, columns=[str(c) for c in header])
-        df = df.dropna(axis=0, how="all").reset_index(drop=True)
-        df = _normalize_numeric_columns(df)
-        facts.update(_compute_facts(df))
-        # full_text already contains every table cell as raw page text, so
-        # appending the whole thing plus the clean markdown table roughly
-        # doubles what the model has to process every round. Keep just a
-        # short prefix of full_text (header/company info, dates, footer
-        # notes) and let the table (the actual countable data) carry the
-        # rest — cuts per-round latency without losing the row data itself.
-        text_preview = full_text[:800]
-        markdown = text_preview + "\n\n" + df.to_markdown(index=False)
-        return df, facts, markdown
+        tables = {}
+        for i, (header, body) in enumerate(
+            sorted(table_groups.items(), key=lambda kv: -len(kv[1])), start=1
+        ):
+            df = pd.DataFrame(body, columns=[str(c) for c in header])
+            df = df.dropna(axis=0, how="all").reset_index(drop=True)
+            df = _normalize_numeric_columns(df)
+            tables[f"table_{i}"] = df
+
+        table_facts, table_markdown = _tables_to_facts_and_markdown(tables)
+        facts.update(table_facts)
+        markdown = full_text + "\n\n" + table_markdown
+        return tables, facts, markdown
     finally:
         doc.close()
 
@@ -248,34 +321,63 @@ def _find_raw_file_on_disk(file_info: dict) -> bytes | None:
 
 TOOL_SCHEMAS = [
     {"type": "function", "function": {
+        "name": "list_tables",
+        "description": "List every table detected in the document, with each one's id, column names, and row count. Call this whenever the document might contain more than one distinct table (e.g. several invoices, shipments, or sections merged into one upload) before assuming a count covers the whole document.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
         "name": "count_rows",
-        "description": "Count rows in the uploaded table, optionally filtered by a pandas query expression.",
+        "description": "Count rows in one specific table, optionally filtered by a pandas query expression. Pass table='all' (no filter) to get the total row count across every table in the document in one call, instead of adding up individual table counts yourself.",
         "parameters": {"type": "object", "properties": {
-            "filter_expr": {"type": "string", "description": "Optional pandas query expression"}}},
+            "table": {"type": "string", "description": "Table id from list_tables (e.g. 'table_1'), or 'all' for the unfiltered cross-table total"},
+            "filter_expr": {"type": "string", "description": "Optional pandas query expression (not supported together with table='all')"}},
+            "required": ["table"]},
     }},
     {"type": "function", "function": {
         "name": "sum_column",
-        "description": "Sum a numeric column, optionally filtered by a pandas query expression.",
+        "description": "Sum a numeric column in one specific table, optionally filtered by a pandas query expression.",
         "parameters": {"type": "object", "properties": {
-            "column": {"type": "string"}, "filter_expr": {"type": "string"}}, "required": ["column"]},
+            "table": {"type": "string", "description": "Table id from list_tables, e.g. 'table_1'"},
+            "column": {"type": "string"}, "filter_expr": {"type": "string"}},
+            "required": ["table", "column"]},
     }},
     {"type": "function", "function": {
         "name": "get_row",
-        "description": "Get a single row by its zero-based index.",
+        "description": "Get a single row by its zero-based index from one specific table.",
         "parameters": {"type": "object", "properties": {
-            "index": {"type": "integer"}}, "required": ["index"]},
+            "table": {"type": "string", "description": "Table id from list_tables, e.g. 'table_1'"},
+            "index": {"type": "integer"}},
+            "required": ["table", "index"]},
     }},
 ]
 
 SYSTEM_PROMPT = (
-    "You answer questions about one uploaded business document (an invoice "
-    "or inventory list). The document's cleaned content is provided below. "
-    "For any question involving counting, summing, or totals, you MUST call "
-    "the matching tool rather than counting or adding numbers yourself — "
-    "the tools compute exact values from the real data; your own counting "
-    "over text is not reliable enough for this task. Respond in German by "
-    "default, matching the language of the document and the user, unless "
-    "the user's question is written in a different language."
+    "You answer questions about one uploaded document. It can be anything — "
+    "an invoice, a contract, a report, a letter, mixed content — not just "
+    "business/tabular documents. The document's full extracted text is "
+    "provided below, along with any tables that were detected in it. Your "
+    "job is to surface whatever is actually useful from the document for "
+    "the question asked, whether that's an exact number, a summary, or a "
+    "specific fact buried in the text.\n\n"
+    "A single uploaded file can contain MORE THAN ONE distinct table — for "
+    "example, two invoices or shipments merged into one scan. Never assume "
+    "a count from one table covers the whole document; if in doubt, call "
+    "list_tables first to see what's actually there, and combine or report "
+    "per-table results as the question requires. If a FACTS._summary block "
+    "is present, its total_rows_all_tables value IS the exact cross-table "
+    "row total, already computed for you — use it directly (or call "
+    "count_rows with table='all') for a whole-document row count. Never "
+    "add up individual table counts yourself by hand — that arithmetic is "
+    "exactly the kind of mistake this tool-calling design exists to avoid.\n\n"
+    "For any question involving counting, summing, or totals on tabular "
+    "data, you MUST call the matching tool rather than counting or adding "
+    "numbers yourself — the tools compute exact values from the real data; "
+    "your own counting over text is not reliable enough for this task. For "
+    "qualitative questions (what does this say, summarize this, find X), "
+    "answer directly from the document text provided — no tool call needed "
+    "for those. Respond in German by default, matching the language of the "
+    "document and the user, unless the user's question is written in a "
+    "different language."
 )
 
 
@@ -333,7 +435,7 @@ def _chat_stream_with_heartbeat(client, model: str, messages: list, tools, heart
         yield item
 
 
-def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str, question: str):
+def _run_tool_loop(model: str, host: str, tables: dict, context: str, question: str):
     """Plain (NOT async) generator: yields text chunks as they arrive from
     Ollama, so the connection to the browser stays alive throughout a long
     response instead of going silent for the whole duration of one blocking
@@ -351,7 +453,7 @@ def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str,
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"DOCUMENT:\n{context}\n\nQUESTION: {question}"},
     ]
-    tools = TOOL_SCHEMAS if df is not None else None
+    tools = TOOL_SCHEMAS if tables else None
     max_rounds = 6
 
     for round_num in range(max_rounds):
@@ -392,17 +494,42 @@ def _run_tool_loop(model: str, host: str, df: pd.DataFrame | None, context: str,
             name = call["function"]["name"]
             args = call["function"]["arguments"]
             try:
-                if name == "count_rows":
-                    subset = df.query(args["filter_expr"]) if args.get("filter_expr") else df
-                    result = len(subset)
-                elif name == "sum_column":
-                    subset = df.query(args["filter_expr"]) if args.get("filter_expr") else df
-                    numeric = pd.to_numeric(subset[args["column"]], errors="coerce")
-                    if len(subset) > 0 and numeric.notna().sum() == 0:
-                        raise ValueError(f"Column '{args['column']}' has no numeric values to sum")
-                    result = float(numeric.sum())
-                elif name == "get_row":
-                    result = df.iloc[args["index"]].to_dict()
+                if name == "list_tables":
+                    result = {
+                        tid: {"columns": list(df.columns), "row_count": len(df)}
+                        for tid, df in tables.items()
+                    }
+                elif name == "count_rows" and args.get("table") == "all":
+                    # Well-defined regardless of differing column names
+                    # across tables, unlike a cross-table sum_column would
+                    # be — computed here rather than asking the model to
+                    # add several per-table results itself.
+                    if args.get("filter_expr"):
+                        raise ValueError(
+                            "table='all' only supports an unfiltered count_rows "
+                            "(filters may reference columns that don't exist in every "
+                            "table) — call count_rows per table id for a filtered count."
+                        )
+                    result = sum(len(df) for df in tables.values())
+                elif name in ("count_rows", "sum_column", "get_row"):
+                    table_id = args.get("table")
+                    if table_id not in tables:
+                        raise ValueError(
+                            f"Unknown table '{table_id}' — call list_tables to see valid ids: "
+                            f"{list(tables.keys())}"
+                        )
+                    df = tables[table_id]
+                    if name == "count_rows":
+                        subset = df.query(args["filter_expr"]) if args.get("filter_expr") else df
+                        result = len(subset)
+                    elif name == "sum_column":
+                        subset = df.query(args["filter_expr"]) if args.get("filter_expr") else df
+                        numeric = pd.to_numeric(subset[args["column"]], errors="coerce")
+                        if len(subset) > 0 and numeric.notna().sum() == 0:
+                            raise ValueError(f"Column '{args['column']}' has no numeric values to sum")
+                        result = float(numeric.sum())
+                    else:  # get_row
+                        result = df.iloc[args["index"]].to_dict()
                 else:
                     result = f"unknown tool: {name}"
             except Exception as exc:
@@ -455,14 +582,14 @@ class Pipe:
 
         try:
             if raw_bytes is not None and ext in ("csv", "xlsx", "xls"):
-                df, facts, markdown = _extract_tabular_bytes(raw_bytes, is_csv=(ext == "csv"))
+                tables, facts, markdown = _extract_tabular_bytes(raw_bytes, is_csv=(ext == "csv"))
             elif raw_bytes is not None and ext == "pdf":
-                df, facts, markdown = _extract_pdf_bytes(raw_bytes)
+                tables, facts, markdown = _extract_pdf_bytes(raw_bytes)
             elif fallback_used:
                 # Couldn't find the raw file — fall back to whatever text
-                # Open WebUI already extracted. No structured table, no
+                # Open WebUI already extracted. No structured table(s), no
                 # tool-calling guarantee — flagged to the user below.
-                df, facts = None, None
+                tables, facts = {}, None
                 markdown = file_info.get("data", {}).get("content", "") or ""
             else:
                 yield f"Couldn't parse this file (unsupported type: .{ext})."
@@ -474,14 +601,15 @@ class Pipe:
         context = markdown
         if facts:
             context += f"\n\nFACTS: {json.dumps(facts, ensure_ascii=False)}"
-        if df is None:
+        if not tables:
             context += (
-                "\n\nNOTE: The original file couldn't be located on disk, so this is "
-                "Open WebUI's own pre-extracted text, not a verified structured table. "
-                "Exact counts are NOT guaranteed here — say so if a count is asked."
+                "\n\nNOTE: No structured table was found (or the original file couldn't "
+                "be located, in which case this is Open WebUI's own pre-extracted text). "
+                "Exact counts/sums are NOT available — answer only from the text above, "
+                "and say so plainly if a count is being requested."
             )
 
-        for chunk in _run_tool_loop(self.valves.MODEL, self.valves.OLLAMA_HOST, df, context, user_message):
+        for chunk in _run_tool_loop(self.valves.MODEL, self.valves.OLLAMA_HOST, tables, context, user_message):
             yield chunk
 
         if fallback_used:
