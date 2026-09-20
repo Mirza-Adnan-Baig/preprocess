@@ -6,13 +6,32 @@ from src.faro_docs.model import Document
 
 
 def _column_stats(series: pd.Series) -> dict:
-    numeric = pd.to_numeric(series, errors="coerce")
-    has_numbers = bool(numeric.notna().any())
+    """Never re-decide whether a column is numeric here.
+
+    build_table (src/faro_docs/tables.py) already made that call once, per
+    column, using the German-aware, identifier-aware logic in german.py --
+    and converted the column's real dtype accordingly. A second, independent
+    pd.to_numeric(errors="coerce") here used to disagree with that decision
+    on any column of plain digit strings it didn't also recognise as an
+    identifier (found on a real EAN column: correctly left as text by
+    build_table, then silently averaged and min/maxed here anyway, stripping
+    every leading zero in the process). Trusting the column's already-decided
+    dtype keeps exactly one source of truth for "is this numeric".
+    """
+    if not pd.api.types.is_numeric_dtype(series):
+        return {
+            "summe": None,
+            "min": None,
+            "max": None,
+            "durchschnitt": None,
+            "verschiedene_werte": int(series.nunique(dropna=True)),
+        }
+    has_numbers = bool(series.notna().any())
     return {
-        "summe": float(numeric.sum()) if has_numbers else None,
-        "min": float(numeric.min()) if has_numbers else None,
-        "max": float(numeric.max()) if has_numbers else None,
-        "durchschnitt": float(numeric.mean()) if has_numbers else None,
+        "summe": float(series.sum()) if has_numbers else None,
+        "min": float(series.min()) if has_numbers else None,
+        "max": float(series.max()) if has_numbers else None,
+        "durchschnitt": float(series.mean()) if has_numbers else None,
         "verschiedene_werte": int(series.nunique(dropna=True)),
     }
 

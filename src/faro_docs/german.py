@@ -24,6 +24,7 @@ _ENGLISH_DECIMAL = re.compile(r"^\d+\.\d{1,2}$|^\d+\.\d{4,}$")
 _AMBIGUOUS_DOTTED = re.compile(rf"^\d{{1,3}}(?:[.{_SPACES}]\d{{3}})+$")
 _ENGLISH_GROUPED = re.compile(r"^\d{1,3}(?:,\d{3})+$")
 _PLAIN_INTEGER = re.compile(r"^\d+$")
+_LEADING_ZERO_INTEGER = re.compile(r"^0\d+$")
 
 RULE_DECIMAL_COMMA = "Dezimalkomma erkannt (deutsches Format)"
 RULE_DECIMAL_POINT = "Dezimalpunkt erkannt (englisches Format)"
@@ -108,6 +109,15 @@ def detect_numeric_format(
         if fallback_style == "english":
             return "english", RULE_AMBIGUOUS_ENGLISH, False
         return "german", RULE_AMBIGUOUS_GERMAN, False
+    if any(_LEADING_ZERO_INTEGER.match(c) for c in cleaned):
+        # A plain digit string with a leading zero (an EAN/barcode, an
+        # article or customer number, a German postal code...) is an
+        # identifier, not a quantity. Converting "0107610691403" to a
+        # number silently drops the leading zero and changes the actual
+        # value -- there's no numeric style that round-trips it, so the
+        # column is left as text instead, exactly like any other
+        # non-numeric column.
+        return "none", RULE_NONE, True
     return "integer", RULE_INTEGER, True
 
 

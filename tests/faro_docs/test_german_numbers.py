@@ -44,6 +44,26 @@ class TestDetection:
         style, _, _ = detect_numeric_format(["1", "42", "750"])
         assert style == "integer"
 
+    def test_leading_zero_digit_strings_are_not_numeric(self):
+        """An EAN/barcode, article number, or German postal code that
+        happens to start with 0 is an identifier, not a quantity --
+        converting it to a number would silently drop the leading zero
+        and change the actual value (found on a real products export:
+        '0107610691403' becoming 107610691403)."""
+        style, rule, confident = detect_numeric_format(
+            ["4836810209885", "0107610691403", "6371019679643"]
+        )
+        assert style == "none"
+        assert confident
+
+    def test_a_single_leading_zero_value_disqualifies_the_whole_column(self):
+        style, _, _ = detect_numeric_format(["1", "2", "007"])
+        assert style == "none"
+
+    def test_the_value_zero_alone_is_not_treated_as_leading_zero(self):
+        style, _, _ = detect_numeric_format(["0", "1", "2"])
+        assert style == "integer"
+
     def test_non_numeric_column_is_none(self):
         style, _, _ = detect_numeric_format(["iPhone Display", "USB-C Kabel"])
         assert style == "none"

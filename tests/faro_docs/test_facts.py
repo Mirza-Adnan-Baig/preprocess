@@ -55,6 +55,27 @@ def test_empty_input_does_not_crash():
     assert compute_facts([])["_zusammenfassung"]["zuletzt_angehaengtes_dokument"] is None
 
 
+def test_identifier_column_left_as_text_gets_no_numeric_stats():
+    """build_table leaves a column of leading-zero digit strings (an EAN, an
+    article number...) as text on purpose (see german.py). Facts must not
+    second-guess that with its own pd.to_numeric and silently compute a
+    min/max/average that strips the leading zero -- found on a real EAN
+    column: correctly text-typed by build_table, then wrongly summarised
+    here anyway before this fix."""
+    frame = pd.DataFrame({"ean": ["0107610691403", "4836810209885"]})
+    columns = {"ean": ColumnInfo(name="ean", numeric_style="none")}
+    doc = Document(
+        id="dok1", filename="dok1.csv", media_type="text/csv",
+        tables=[Table(id="dok1:t1", label="Tabelle 1", frame=frame, columns=columns)],
+    )
+    stats = compute_facts([doc])["dok1"]["tabellen"]["dok1:t1"]["spalten"]["ean"]
+    assert stats["summe"] is None
+    assert stats["min"] is None
+    assert stats["max"] is None
+    assert stats["durchschnitt"] is None
+    assert stats["verschiedene_werte"] == 2
+
+
 def test_summary_names_the_last_document_as_most_recently_attached():
     """Open WebUI hands every file ever attached in a chat back on every turn,
     with no way to tell 'just attached' apart from 'attached three messages
