@@ -24,20 +24,21 @@ model, not just unit tests** — see §4.
 ## 2. How it works
 
 ```
-your file → extract_document()  → routes by extension
+your file(s) → ingest_all()      → sniffs actual content, not just the extension
                                      ├─ .csv/.xlsx → pandas: finds the real header row (skips
-                                     │                title/blank rows), cleans it, builds an exact
-                                     │                FACTS block (row count, sums, etc.) — computed
-                                     │                by code, never guessed
-                                     └─ .pdf        → PyMuPDF reads text + detects tables page by
-                                                       page, merges table fragments that span
-                                                       multiple pages, OCRs scanned pages in German
-                                                       if there's no extractable text
+                                     │                title/blank rows), handles German number
+                                     │                formats (1.234,56), multiple sheets, and
+                                     │                totals rows
+                                     ├─ .pdf        → PyMuPDF reads text + detects tables page by
+                                     │                page, merges table fragments that span
+                                     │                multiple pages
+                                     └─ .txt/.md    → decoded text, no table
                                      ↓
-                        one clean "DOCUMENT: ..." block + a real pandas table in memory
+                a Document per file: text + zero or more real pandas tables + a
+                     code-computed FACTS block (row counts, sums — never guessed)
                                      ↓
-                       sent to the model (Qwen) along with 3 tools it can call:
-                       count_rows / sum_column / get_row — each backed by that real table
+                       sent to the model (Qwen) along with tools it can call:
+              list_documents / list_tables / count_rows / sum_column / get_row / find_rows
                                      ↓
               "how many articles?" → model calls count_rows() → gets the actual number → answers
 ```
@@ -50,22 +51,37 @@ reports whatever number came back. That's the whole idea.
 
 ```
 src/
-  extractors/
-    tabular.py    — CSV/XLSX: header detection, cleaning, exact FACTS block
-    pdf.py        — PDF: text + table extraction, German OCR fallback
-    router.py     — picks the right extractor by file extension; builds a
-                     DataFrame from PDF tables too (including multi-page ones)
-    dtypes.py     — makes extracted columns actually numeric so filters work
-  tools.py        — count_rows / sum_column / get_row, the exact-answer tools
-  agent.py        — talks to Ollama, runs the tool-calling loop, builds the
-                     German-by-default system prompt
+  faro_docs/
+    model.py        — the Document/Table dataclasses everything else builds on
+    german.py        — German text decoding, number-format parsing (1.234,56)
+    tables.py        — header detection, totals-row detection
+    ingest/
+      tabular.py     — CSV/XLSX ingestion using the above
+      pdf_ingest.py  — PDF text + table ingestion
+      router.py      — sniffs content and dispatches to the right ingester;
+                        ingest_all() processes every uploaded file
+    facts.py          — the code-computed FACTS block (row counts, sums, etc.)
+    messages_de.py    — the German user-facing strings (errors, notes, footers)
+    answer.py         — talks to Ollama, runs the tool-calling loop, builds the
+                        German-by-default system prompt and context
+adapters/
+  openwebui_pipe.py   — thin Open WebUI Pipe wrapper around faro_docs; contains
+                        no document logic of its own
 scripts/
   generate_synthetic_data.py — makes fake invoices/inventory for testing
   ask.py          — the command you actually run to test a real file (§6)
-tests/            — 31 tests, all passing, covering every module above
+tools/
+  build_bundle.py     — generates openwebui/faro_document_assistant.py from
+                        src/faro_docs/ + adapters/openwebui_pipe.py (§6.5)
+  setup_openwebui.py  — one-time admin-API call that disables Open WebUI's
+                        built-in file RAG for this model (§6.5) — mandatory
+tests/            — covering every module above; run `pytest -v` for the current count
 docs/
   design-spec.md  — the full design document (read this for the "why")
-  phase0-plan.md  — the step-by-step plan this was built from
+  phase0-plan.md  — the step-by-step plan the earlier prototype was built from
+openwebui/
+  README.md            — how to install and configure the Open WebUI pipe
+  faro_document_assistant.py — GENERATED by tools/build_bundle.py; never hand-edit
 README.md          — shorter technical reference (setup, limitations)
 START_HERE.md       — this file
 ```
@@ -196,8 +212,8 @@ pages.
 pytest -v
 ```
 
-You should see `31 passed`. (One test needs a local Ollama model — see §5.7
-— it will `SKIP` cleanly if Ollama isn't installed, which is fine.)
+You should see every test pass (one test may `SKIP` cleanly if the real
+FARO corpus fixtures aren't present locally — that's expected and fine).
 
 ### 5.7 (Optional) Install Ollama for local testing
 
@@ -239,12 +255,32 @@ python -m scripts.ask path\to\inventory.xlsx "What's the total quantity where un
 
 Everything above is you manually running a script per file. To make it run
 automatically for every upload in the real Open WebUI chat, see
-[`openwebui/README.md`](openwebui/README.md) — two files to install via
-**Admin Panel → Functions** (your admin access covers this, no IT needed
-for this step). **Install `diagnostic_pipe.py` first** — the file-access
-mechanism genuinely hasn't been verified against your live instance yet,
-and that file tells us what we're actually working with before trusting
-the real one.
+[`openwebui/README.md`](openwebui/README.md) for the full install order.
+Short version:
+
+1. Regenerate the pipe file if you've changed anything in `src/faro_docs/`:
+   ```powershell
+   python -m tools.build_bundle
+   ```
+   This writes `openwebui/faro_document_assistant.py`. **That file is
+   generated — never hand-edit it**; edit `src/faro_docs/` and regenerate
+   instead, or your change will be silently lost the next time someone
+   runs this command.
+2. Install it via **Admin Panel → Functions → Create** (your admin access
+   covers this, no IT needed for this step) — paste the generated file,
+   Save, activate it. **Install `diagnostic_pipe.py` first** if the
+   file-access mechanism hasn't been verified against your live instance
+   yet — it tells us what we're actually working with before trusting the
+   real one.
+3. **Mandatory, one time per Open WebUI instance:**
+   ```powershell
+   python -m tools.setup_openwebui --url http://localhost:3000 --email <admin-email> --password '<admin-password>'
+   ```
+   Without this, Open WebUI's built-in file RAG stays on for this model
+   and silently rewrites the user's question before the pipe ever sees it
+   — the pipe then confidently answers a question nobody asked, with no
+   visible error. Running this once disables that behavior
+   (`capabilities.file_context = false`) for the FARO model specifically.
 
 ## 7. Testing at the office (weak PC, real invoices, no local model)
 
@@ -318,8 +354,7 @@ already see the extracted table and know whether the parser worked.
   latter.
 - `TesseractError` on a scanned PDF — the German (`deu`) language pack
   isn't installed; see §5.5.
-- Tests fail entirely (not just the Ollama one skipping) — make sure you
-  activated the virtual environment (`.venv\Scripts\activate`) and ran
-  `pip install -r requirements.txt` first.
-- The `test_agent_e2e.py` test SKIPs — that's fine and expected if Ollama
-  isn't installed on this machine (see §5.7 or §7).
+- Tests fail entirely (not just the one corpus-fixture test skipping) —
+  make sure you activated the virtual environment
+  (`.venv\Scripts\activate`) and ran `pip install -r requirements.txt`
+  first.
