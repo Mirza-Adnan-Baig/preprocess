@@ -161,3 +161,35 @@ Then repeat Step 2 (delete the old Function, create it fresh with the
 newly generated file — don't edit in place, see the troubleshooting note
 above about partial pastes). Step 3 only needs to be re-run if you
 recreate the function under a different id; otherwise it stays in effect.
+
+## Known issue found after deployment (2026-09-21)
+
+Open WebUI hands the pipe **every file ever attached in a chat thread**
+on every turn, with no way to tell "just attached" apart from "attached
+several messages ago" — checked directly, there is no such signal
+anywhere in what Open WebUI provides. Attaching a new file mid-conversation
+used to make the pipe silently combine it with an older, no-longer-relevant
+one.
+
+**Fixed at the code level:** a plain question like "how many rows" now
+correctly computes only the most recently attached document's numbers —
+verified directly via the tool-call trace shown in the chat (look for
+`count_rows({'table': 'alle'})` in the response; the number next to the
+arrow is what was actually computed, always correct going forward).
+
+**Not fully fixed — a model-quality gap, not a code bug:** the small
+local test model (`qwen2.5:7b`) doesn't always faithfully repeat that
+correct computed number in its final written sentence — sometimes it
+still mentions an older aggregate instead, inconsistently (confirmed:
+identical repeated test, one run stated both numbers, the next dropped
+the correct one). The underlying data is always correct by this point;
+what's unreliable is a small model's prose. This needs re-testing against
+the real production model (Qwen3.6-27B) before trusting it fully — small
+local models are consistently less reliable at this kind of instruction
+than the production model is expected to be, per multiple earlier
+findings in this project.
+
+**Practical advice until re-verified:** if a question follows an earlier
+file in the same chat and the answer looks combined or stale, check the
+tool-call trace line for the real number, or start a new chat per document
+to be certain.
