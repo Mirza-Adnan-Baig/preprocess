@@ -6,8 +6,9 @@ reportlab = pytest.importorskip("reportlab")
 
 
 def _build_pdf(path, sections):
+    from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
-    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Table
+    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Table, TableStyle
     from reportlab.lib.styles import getSampleStyleSheet
 
     styles = getSampleStyleSheet()
@@ -16,7 +17,9 @@ def _build_pdf(path, sections):
         if index:
             elements.append(PageBreak())
         elements.append(Paragraph(title, styles["Title"]))
-        elements.append(Table([header] + body, repeatRows=1))
+        table = Table([header] + body, repeatRows=1)
+        table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)]))
+        elements.append(table)
     SimpleDocTemplate(str(path), pagesize=A4).build(elements)
     return path
 

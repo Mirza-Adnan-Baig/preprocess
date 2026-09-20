@@ -20,9 +20,7 @@ def ingest_pdf(raw: bytes, document_id: str, filename: str) -> Document:
 
         for page in document:
             page_texts.append(page.get_text())
-            for found in page.find_tables(
-                strategy="text", min_words_vertical=2
-            ).tables:
+            for found in page.find_tables().tables:
                 rows = found.extract()
                 if len(rows) < 2:
                     continue
