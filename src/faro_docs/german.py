@@ -85,7 +85,12 @@ def detect_numeric_format(
     plain = sum(bool(_PLAIN_INTEGER.match(c)) for c in cleaned)
 
     recognised = german + english + ambiguous + english_grouped + plain
-    if recognised == 0:
+    # A single stray numeric-looking cell in an otherwise textual column
+    # (e.g. one part number inside a Bezeichnung/Artikel column) must not
+    # convert the whole column, silently turning every real description
+    # into NaN. Require a majority of the non-empty values to actually
+    # look numeric before assigning any numeric style at all.
+    if recognised == 0 or recognised * 2 < len(cleaned):
         return "none", RULE_NONE, True
 
     if german and english:

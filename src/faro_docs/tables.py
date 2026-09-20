@@ -88,19 +88,33 @@ def find_totals_rows(frame: pd.DataFrame, columns: dict[str, ColumnInfo]) -> lis
         name for name, info in columns.items() if info.numeric_style != "none"
     ]
     last = len(frame) - 1
-    if last > 0 and last not in flagged:
+    # Require at least 3 rows so a 2-line invoice can never be mistaken for
+    # "one data row plus a total" by a single coincidental match (e.g. two
+    # quantities of 1 summing to the row above).
+    if last >= 2 and last not in flagged and numeric_columns:
+        checkable_matches = []
         for name in numeric_columns:
             series = to_numeric_series(frame[name], columns[name].numeric_style)
             candidate = series.iloc[last]
+            if candidate is None or pd.isna(candidate):
+                continue  # blank on this row -- not evidence either way
             preceding = series.iloc[:last].sum()
-            if (
-                candidate is not None
-                and not pd.isna(candidate)
-                and preceding
-                and _matches_totals_tolerance(float(candidate), float(preceding))
-            ):
-                flagged.add(last)
-                break
+            if not preceding:
+                continue  # nothing above to compare against
+            checkable_matches.append(
+                _matches_totals_tolerance(float(candidate), float(preceding))
+            )
+        # Every numeric column that actually HAS a value on this row must
+        # independently agree it looks like a total. A single coincidental
+        # match (e.g. a sequential Pos. column where 3 == 1+2) is not
+        # enough on its own -- a genuine totals row's other filled columns
+        # (Betrag, etc.) must also agree, which is what actually
+        # distinguishes a real total from an ordinary last data row. A
+        # column that's blank on this row (common on real totals rows,
+        # e.g. Pos./Menge left empty while only Betrag carries the total)
+        # is simply skipped rather than counted as a mismatch.
+        if checkable_matches and all(checkable_matches):
+            flagged.add(last)
     return sorted(flagged)
 
 

@@ -117,6 +117,10 @@ class Pipe:
             yield KEINE_TABELLE + "\n\n"
 
         for chunk in answer(
-            documents, question, model=self.valves.MODEL, host=self._host()
+            documents,
+            question,
+            model=self.valves.MODEL,
+            host=self._host(),
+            max_text_chars=self.valves.MAX_TEXT_CHARS,
         ):
             yield chunk

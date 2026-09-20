@@ -72,3 +72,23 @@ class TestPipe:
 
         assert inspect.isgeneratorfunction(Pipe.pipe)
         assert not inspect.isasyncgenfunction(Pipe.pipe)
+
+    def test_max_text_chars_valve_is_passed_to_answer(self, tmp_path, monkeypatch):
+        path = tmp_path / "a.csv"
+        path.write_bytes(b"Artikel;Menge\nA;1\n")
+        pipe = Pipe()
+        pipe.valves.MAX_TEXT_CHARS = 12345
+        captured = {}
+
+        def fake_answer(*args, **kwargs):
+            captured.update(kwargs)
+            return iter(["ok"])
+
+        monkeypatch.setattr("adapters.openwebui_pipe.answer", fake_answer)
+        list(
+            pipe.pipe(
+                {"messages": [{"content": "Frage?"}]},
+                __files__=[{"file": {"filename": "a.csv", "path": str(path), "id": "1"}}],
+            )
+        )
+        assert captured.get("max_text_chars") == 12345
