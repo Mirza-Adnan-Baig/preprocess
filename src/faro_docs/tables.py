@@ -87,34 +87,55 @@ def find_totals_rows(frame: pd.DataFrame, columns: dict[str, ColumnInfo]) -> lis
     numeric_columns = [
         name for name, info in columns.items() if info.numeric_style != "none"
     ]
+    label_columns = [
+        name for name, info in columns.items() if info.numeric_style == "none"
+    ]
     last = len(frame) - 1
-    # Require at least 3 rows so a 2-line invoice can never be mistaken for
-    # "one data row plus a total" by a single coincidental match (e.g. two
-    # quantities of 1 summing to the row above).
+
     if last >= 2 and last not in flagged and numeric_columns:
-        checkable_matches = []
-        for name in numeric_columns:
-            series = to_numeric_series(frame[name], columns[name].numeric_style)
-            candidate = series.iloc[last]
-            if candidate is None or pd.isna(candidate):
-                continue  # blank on this row -- not evidence either way
-            preceding = series.iloc[:last].sum()
-            if not preceding:
-                continue  # nothing above to compare against
-            checkable_matches.append(
-                _matches_totals_tolerance(float(candidate), float(preceding))
-            )
-        # Every numeric column that actually HAS a value on this row must
-        # independently agree it looks like a total. A single coincidental
-        # match (e.g. a sequential Pos. column where 3 == 1+2) is not
-        # enough on its own -- a genuine totals row's other filled columns
-        # (Betrag, etc.) must also agree, which is what actually
-        # distinguishes a real total from an ordinary last data row. A
-        # column that's blank on this row (common on real totals rows,
-        # e.g. Pos./Menge left empty while only Betrag carries the total)
-        # is simply skipped rather than counted as a mismatch.
-        if checkable_matches and all(checkable_matches):
-            flagged.add(last)
+        # A genuine totals row almost always leaves its description/label
+        # cell blank ("", 60,00 rather than Schraube, 60,00), while a real
+        # last line item almost always has a real description. When the
+        # table has such a column, require it to be blank on this row
+        # before trusting arithmetic evidence at all -- this is what
+        # actually distinguishes a real total from an ordinary last row
+        # that happens to coincide arithmetically (e.g. a sequential Pos.
+        # column where 3 == 1+2).
+        label_is_blank = all(
+            not (frame[name].iloc[last] is not None and str(frame[name].iloc[last]).strip())
+            for name in label_columns
+        )
+
+        if label_columns and not label_is_blank:
+            pass  # a real description survives on this row -- not a total
+        else:
+            checkable_matches = []
+            for name in numeric_columns:
+                series = to_numeric_series(frame[name], columns[name].numeric_style)
+                candidate = series.iloc[last]
+                if candidate is None or pd.isna(candidate):
+                    continue
+                preceding = series.iloc[:last].sum()
+                if not preceding:
+                    continue
+                checkable_matches.append(
+                    _matches_totals_tolerance(float(candidate), float(preceding))
+                )
+            if label_columns:
+                # Label already confirmed blank above -- one agreeing
+                # numeric column is enough evidence. Columns like a
+                # constant VAT rate or a repeated unit price never sum
+                # linearly and would otherwise block detection forever.
+                if checkable_matches and any(checkable_matches):
+                    flagged.add(last)
+            else:
+                # No description column exists anywhere in this table, so
+                # there is no label signal to lean on -- fall back to the
+                # stricter rule and require every checkable numeric column
+                # to agree.
+                if checkable_matches and all(checkable_matches):
+                    flagged.add(last)
+
     return sorted(flagged)
 
 

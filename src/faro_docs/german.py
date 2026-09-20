@@ -90,7 +90,7 @@ def detect_numeric_format(
     # convert the whole column, silently turning every real description
     # into NaN. Require a majority of the non-empty values to actually
     # look numeric before assigning any numeric style at all.
-    if recognised == 0 or recognised * 2 < len(cleaned):
+    if recognised == 0 or recognised * 2 <= len(cleaned):
         return "none", RULE_NONE, True
 
     if german and english:
