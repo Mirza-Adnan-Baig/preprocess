@@ -2,6 +2,7 @@
 
 import csv
 import io
+from collections import Counter
 
 import pandas as pd
 
@@ -18,14 +19,46 @@ def _rows_to_text(rows: list[list]) -> str:
     )
 
 
+def _normalize_row_widths(rows: list[list], delimiter: str) -> list[list]:
+    """Fit every row to the table's real width, without letting one bad row
+    balloon the whole table into dozens of bogus columns.
+
+    A real-world export can have a stray unescaped quote inside one free-text
+    field (an HTML job description, say), which makes the standard CSV
+    parser split that single row into far more fields than the header has.
+    Using that row's length as "the" table width -- the previous behaviour --
+    padded every other row with dozens of meaningless "Spalte N" columns and
+    fooled the model into reading unique-value counts off empty garbage
+    instead of the real column. The width most rows actually agree on is
+    used instead, and a too-long row has its excess trailing fields rejoined
+    into the last column rather than silently dropped.
+    """
+    if not rows:
+        return rows
+    counts = Counter(len(row) for row in rows)
+    # On a tie (common on a short file: a couple of single-field preamble
+    # lines can tie the real header+data width), prefer the wider
+    # candidate -- preamble/junk lines are consistently short, so the real
+    # table's width is the larger of any tied candidates, never the smaller.
+    best_count = max(counts.values())
+    width = max(length for length, count in counts.items() if count == best_count)
+    normalized = []
+    for row in rows:
+        if len(row) > width:
+            row = row[: width - 1] + [delimiter.join(str(c) for c in row[width - 1 :])]
+        elif len(row) < width:
+            row = row + [None] * (width - len(row))
+        normalized.append(row)
+    return normalized
+
+
 def ingest_csv(raw: bytes, document_id: str, filename: str) -> Document:
     text, encoding = decode_text(raw)
     delimiter = detect_delimiter(text)
     rows = [
         row for row in csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
     ]
-    width = max((len(row) for row in rows), default=0)
-    padded = [row + [None] * (width - len(row)) for row in rows]
+    padded = _normalize_row_widths(rows, delimiter)
 
     table = build_table(padded, table_id=f"{document_id}:tabelle1", label="Tabelle 1")
     return Document(
