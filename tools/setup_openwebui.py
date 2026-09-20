@@ -53,7 +53,9 @@ def disable_file_context(base_url: str, token: str, model_id: str = MODEL_ID) ->
     try:
         _post(f"{base_url}/api/v1/models/create", token, payload)
         action = "erstellt"
-    except HTTPError:
+    except HTTPError as error:
+        if error.code != 401:
+            raise
         _post(f"{base_url}/api/v1/models/model/update", token, payload)
         action = "aktualisiert"
 
