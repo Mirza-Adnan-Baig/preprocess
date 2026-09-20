@@ -11,9 +11,13 @@ import pandas as pd
 from src.faro_docs.facts import compute_facts
 from src.faro_docs.messages_de import (
     DENKT_NACH,
+    DENKT_NACH_EN,
     OLLAMA_NICHT_ERREICHBAR,
+    OLLAMA_NICHT_ERREICHBAR_EN,
     ZU_VIELE_RUNDEN,
+    ZU_VIELE_RUNDEN_EN,
     provenance_footer,
+    translate_notes,
 )
 from src.faro_docs.model import Document
 
@@ -89,6 +93,17 @@ SYSTEM_PROMPT = (
     "annehmen, wenn die Frage in einer anderen Sprache gestellt wurde. "
     "In ganzen Sätzen, knapp."
 )
+
+_FORCE_ENGLISH = (
+    "\n\nOVERRIDE: always answer in English, regardless of the language "
+    "the question was asked in. This overrides rule 7 above."
+)
+
+
+def _system_prompt_for(response_language: str) -> str:
+    if response_language == "en":
+        return SYSTEM_PROMPT + _FORCE_ENGLISH
+    return SYSTEM_PROMPT
 
 
 def _all_tables(documents: list[Document]) -> dict:
@@ -218,14 +233,23 @@ def answer(
     host: str,
     max_rounds: int = 6,
     max_text_chars: int = 40000,
+    response_language: str = "",
 ) -> Iterator[str]:
-    """Plain sync generator -- async pipes never signal completion (open-webui#20196)."""
+    """Plain sync generator -- async pipes never signal completion (open-webui#20196).
+
+    response_language: "" (default) lets the model match whatever language
+    the question was asked in, and keeps this pipe's own fixed messages in
+    German. Set to "en" to force English everywhere -- the model's answer,
+    this pipe's own status/error messages, and the notes ingestion produces
+    -- for local testing by someone who doesn't read German. The real
+    office deployment leaves this at its default.
+    """
     import ollama
 
     client = ollama.Client(host=host)
     context = build_context(documents, max_text_chars=max_text_chars)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _system_prompt_for(response_language)},
         {"role": "user", "content": f"DOKUMENTE:\n{context}\n\nFRAGE: {question}"},
     ]
     tools = TOOL_SCHEMAS if _all_tables(documents) else None
@@ -240,7 +264,10 @@ def answer(
             for item in _stream_with_heartbeat(client, model, messages, tools):
                 if item is _HEARTBEAT:
                     if not seen_output:
-                        yield DENKT_NACH.format(
+                        template = (
+                            DENKT_NACH_EN if response_language == "en" else DENKT_NACH
+                        )
+                        yield template.format(
                             sekunden=int(time.monotonic() - started)
                         ) + " "
                     continue
@@ -252,7 +279,10 @@ def answer(
                 if item.get("message", {}).get("tool_calls"):
                     tool_calls = item["message"]["tool_calls"]
         except Exception as error:
-            yield "\n\n" + OLLAMA_NICHT_ERREICHBAR.format(host=host)
+            template = (
+                OLLAMA_NICHT_ERREICHBAR_EN if response_language == "en" else OLLAMA_NICHT_ERREICHBAR
+            )
+            yield "\n\n" + template.format(host=host)
             yield f"\n\n_({error})_"
             return
 
@@ -263,7 +293,8 @@ def answer(
             sources = {"tabelle"} if used_tools else {"text"}
             notes = [n for d in documents for n in d.notes]
             notes += [n for d in documents for t in d.tables for n in t.notes]
-            yield provenance_footer(sources, notes)
+            notes = translate_notes(notes, response_language or "de")
+            yield provenance_footer(sources, notes, language=response_language or "de")
             return
 
         used_tools = True
@@ -283,4 +314,4 @@ def answer(
                 }
             )
 
-    yield "\n\n" + ZU_VIELE_RUNDEN
+    yield "\n\n" + (ZU_VIELE_RUNDEN_EN if response_language == "en" else ZU_VIELE_RUNDEN)

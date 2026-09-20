@@ -828,7 +828,15 @@ def compute_facts(documents: list[Document]) -> dict:
 
 
 # ---- src/faro_docs/messages_de.py ----
-"""Every string a user can see. German only -- the users are non-technical Germans."""
+"""Every fixed string the pipe itself emits.
+
+German by default, since the real users at the office are non-technical
+Germans. A RESPONSE_LANGUAGE valve (see adapters/openwebui_pipe.py) can
+force everything -- these fixed strings, the note translations below, and
+the model's own answer via the system prompt -- into English instead, for
+local testing by someone who doesn't read German.
+"""
+
 
 KEINE_DATEI = "Bitte hängen Sie eine Datei an Ihre Frage an (PDF, Excel, CSV oder Text)."
 EXTRAHIERE = "_(Dokument wird ausgewertet …)_"
@@ -853,21 +861,128 @@ RAG_WARNUNG = (
     "`file_context` abschalten.\n"
 )
 
+KEINE_DATEI_EN = "Please attach a file to your question (PDF, Excel, CSV, or text)."
+EXTRAHIERE_EN = "_(analyzing document …)_"
+DENKT_NACH_EN = "_(still working, {sekunden}s …)_"
+KEINE_TABELLE_EN = (
+    "No usable table was found in this file. "
+    "Exact counts or sums can't be answered reliably as a result."
+)
+OLLAMA_NICHT_ERREICHBAR_EN = (
+    "The language model is not reachable at `{host}`. "
+    "Please check the OLLAMA_HOST setting under Admin Panel > Functions."
+)
+ZU_VIELE_RUNDEN_EN = (
+    "I couldn't reach a final answer within the allowed steps. "
+    "Please phrase the question a bit more precisely."
+)
+RAG_WARNUNG_EN = (
+    "**Warning: Open WebUI's built-in file processing is active.**\n"
+    "It replaces your question with its own text before this function ever "
+    "sees it, which makes answers unreliable.\n"
+    "Fix in the admin area: disable the `file_context` capability for this model.\n"
+)
+
 _QUELLEN = {
     "tabelle": "aus der Tabelle berechnet",
     "text": "aus dem Dokumenttext gelesen",
     "ocr": "per Texterkennung gelesen (unsicher)",
 }
+_QUELLEN_EN = {
+    "tabelle": "computed from the table",
+    "text": "read from the document text",
+    "ocr": "read via text recognition (uncertain)",
+}
+
+# The small, fixed vocabulary of German note templates produced deep in
+# ingestion (src/faro_docs/german.py, tables.py, ingest/*.py) -- translated
+# here, in one place, rather than threading a language parameter through
+# every extraction function for a handful of known strings.
+_RULE_TRANSLATIONS = {
+    "Dezimalkomma erkannt (deutsches Format)": "decimal comma detected (German format)",
+    "Dezimalpunkt erkannt (englisches Format)": "decimal point detected (English format)",
+    "Punkt als Tausendertrennzeichen gedeutet (deutsches Format); eindeutig ist es nicht": (
+        "dot read as a thousands separator (German format); not unambiguous"
+    ),
+    "Punkt als Dezimaltrennzeichen gedeutet (englisches Format); eindeutig ist es nicht": (
+        "dot read as a decimal separator (English format); not unambiguous"
+    ),
+    "Gemischte Zahlenformate in derselben Spalte": "mixed number formats in the same column",
+    "Ganze Zahlen ohne Trennzeichen": "whole numbers with no separators",
+    "Keine Zahlenspalte": "not a numeric column",
+}
+
+_NOTE_PATTERNS_EN = [
+    (
+        re.compile(r'^Spalte „(?P<name>.+)“: (?P<rule>.+)\.$'),
+        lambda m: f'Column "{m["name"]}": '
+        f'{_RULE_TRANSLATIONS.get(m["rule"], m["rule"])}.',
+    ),
+    (
+        re.compile(r"^Datei wurde als (?P<encoding>.+) gelesen\.$"),
+        lambda m: f'File was read as {m["encoding"]}.',
+    ),
+    (
+        re.compile(
+            r"^Hinweis: (?P<count>\d+) Summenzeile\(n\) wurde\(n\) von Anzahl und "
+            r"Summen ausgeschlossen, damit nicht doppelt gezählt wird\.$"
+        ),
+        lambda m: f'Note: {m["count"]} totals row(s) were excluded from counts '
+        "and sums to avoid double-counting.",
+    ),
+    (
+        re.compile(
+            r"^Dateityp „(?P<suffix>.+)“ wird nicht unterstützt\. Unterstützt "
+            r"werden derzeit PDF, Excel \(XLSX/XLS\), CSV und Textdateien\.$"
+        ),
+        lambda m: f'File type "{m["suffix"]}" is not supported. Currently '
+        "supported: PDF, Excel (XLSX/XLS), CSV, and text files.",
+    ),
+    (
+        re.compile(r"^Die Datei „(?P<filename>.+)“ konnte nicht gelesen werden: (?P<error>.+)$"),
+        lambda m: f'The file "{m["filename"]}" could not be read: {m["error"]}',
+    ),
+    (
+        re.compile(
+            r"^Diese Datei enthält kaum auslesbaren Text und ist vermutlich ein "
+            r"Scan\. Texterkennung ist in dieser Version noch nicht aktiv\.$"
+        ),
+        lambda m: "This file contains almost no extractable text and is "
+        "likely a scan. Text recognition isn't active in this version yet.",
+    ),
+]
 
 
-def provenance_footer(sources: set[str], notes: list[str]) -> str:
-    """One short German line saying where the answer came from."""
-    parts = [_QUELLEN[s] for s in ("tabelle", "text", "ocr") if s in sources]
+def translate_notes(notes: list[str], language: str) -> list[str]:
+    """Translate the fixed-template notes ingestion produces, if language != 'de'.
+
+    Free-form text embedded in a note (a raw exception message, a filename)
+    is left as-is -- only the surrounding German template is translated.
+    """
+    if language == "de":
+        return notes
+    translated = []
+    for note in notes:
+        for pattern, render in _NOTE_PATTERNS_EN:
+            match = pattern.match(note)
+            if match:
+                translated.append(render(match))
+                break
+        else:
+            translated.append(note)
+    return translated
+
+
+def provenance_footer(sources: set[str], notes: list[str], language: str = "de") -> str:
+    """One short line saying where the answer came from, in the given language."""
+    quellen = _QUELLEN if language == "de" else _QUELLEN_EN
+    parts = [quellen[s] for s in ("tabelle", "text", "ocr") if s in sources]
     if not parts and not notes:
         return ""
     lines = []
     if parts:
-        lines.append("_Herkunft: " + ", ".join(parts) + "._")
+        label = "_Herkunft: " if language == "de" else "_Source: "
+        lines.append(label + ", ".join(parts) + "._")
     lines.extend(f"_{note}_" for note in notes)
     return "\n\n" + "\n".join(lines)
 
@@ -951,6 +1066,17 @@ SYSTEM_PROMPT = (
     "annehmen, wenn die Frage in einer anderen Sprache gestellt wurde. "
     "In ganzen Sätzen, knapp."
 )
+
+_FORCE_ENGLISH = (
+    "\n\nOVERRIDE: always answer in English, regardless of the language "
+    "the question was asked in. This overrides rule 7 above."
+)
+
+
+def _system_prompt_for(response_language: str) -> str:
+    if response_language == "en":
+        return SYSTEM_PROMPT + _FORCE_ENGLISH
+    return SYSTEM_PROMPT
 
 
 def _all_tables(documents: list[Document]) -> dict:
@@ -1080,14 +1206,23 @@ def answer(
     host: str,
     max_rounds: int = 6,
     max_text_chars: int = 40000,
+    response_language: str = "",
 ) -> Iterator[str]:
-    """Plain sync generator -- async pipes never signal completion (open-webui#20196)."""
+    """Plain sync generator -- async pipes never signal completion (open-webui#20196).
+
+    response_language: "" (default) lets the model match whatever language
+    the question was asked in, and keeps this pipe's own fixed messages in
+    German. Set to "en" to force English everywhere -- the model's answer,
+    this pipe's own status/error messages, and the notes ingestion produces
+    -- for local testing by someone who doesn't read German. The real
+    office deployment leaves this at its default.
+    """
     import ollama
 
     client = ollama.Client(host=host)
     context = build_context(documents, max_text_chars=max_text_chars)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _system_prompt_for(response_language)},
         {"role": "user", "content": f"DOKUMENTE:\n{context}\n\nFRAGE: {question}"},
     ]
     tools = TOOL_SCHEMAS if _all_tables(documents) else None
@@ -1102,7 +1237,10 @@ def answer(
             for item in _stream_with_heartbeat(client, model, messages, tools):
                 if item is _HEARTBEAT:
                     if not seen_output:
-                        yield DENKT_NACH.format(
+                        template = (
+                            DENKT_NACH_EN if response_language == "en" else DENKT_NACH
+                        )
+                        yield template.format(
                             sekunden=int(time.monotonic() - started)
                         ) + " "
                     continue
@@ -1114,7 +1252,10 @@ def answer(
                 if item.get("message", {}).get("tool_calls"):
                     tool_calls = item["message"]["tool_calls"]
         except Exception as error:
-            yield "\n\n" + OLLAMA_NICHT_ERREICHBAR.format(host=host)
+            template = (
+                OLLAMA_NICHT_ERREICHBAR_EN if response_language == "en" else OLLAMA_NICHT_ERREICHBAR
+            )
+            yield "\n\n" + template.format(host=host)
             yield f"\n\n_({error})_"
             return
 
@@ -1125,7 +1266,8 @@ def answer(
             sources = {"tabelle"} if used_tools else {"text"}
             notes = [n for d in documents for n in d.notes]
             notes += [n for d in documents for t in d.tables for n in t.notes]
-            yield provenance_footer(sources, notes)
+            notes = translate_notes(notes, response_language or "de")
+            yield provenance_footer(sources, notes, language=response_language or "de")
             return
 
         used_tools = True
@@ -1145,7 +1287,7 @@ def answer(
                 }
             )
 
-    yield "\n\n" + ZU_VIELE_RUNDEN
+    yield "\n\n" + (ZU_VIELE_RUNDEN_EN if response_language == "en" else ZU_VIELE_RUNDEN)
 
 
 # ---- adapters/openwebui_pipe.py ----
@@ -1223,6 +1365,7 @@ class Pipe:
         MODEL: str = "qwen3.6:27b"
         OLLAMA_HOST: str = ""
         MAX_TEXT_CHARS: int = 40000
+        RESPONSE_LANGUAGE: str = ""
 
     def __init__(self):
         self.id = "faro_document_assistant"
@@ -1240,25 +1383,26 @@ class Pipe:
 
     def pipe(self, body: dict, __files__: list = None, __user__: dict = None):
         message = body.get("messages", [{}])[-1].get("content", "")
+        forced_english = self.valves.RESPONSE_LANGUAGE == "en"
 
         if not __files__:
-            yield KEINE_DATEI
+            yield KEINE_DATEI_EN if forced_english else KEINE_DATEI
             return
 
         if looks_like_openwebui_rag(message):
-            yield RAG_WARNUNG + "\n"
+            yield (RAG_WARNUNG_EN if forced_english else RAG_WARNUNG) + "\n"
         question = recover_question(message)
 
-        yield EXTRAHIERE + "\n\n"
+        yield (EXTRAHIERE_EN if forced_english else EXTRAHIERE) + "\n\n"
 
         files = collect_files(__files__)
         if not files:
-            yield KEINE_DATEI
+            yield KEINE_DATEI_EN if forced_english else KEINE_DATEI
             return
 
         documents = ingest_all(files)
         if not any(document.tables for document in documents):
-            yield KEINE_TABELLE + "\n\n"
+            yield (KEINE_TABELLE_EN if forced_english else KEINE_TABELLE) + "\n\n"
 
         for chunk in answer(
             documents,
@@ -1266,5 +1410,6 @@ class Pipe:
             model=self.valves.MODEL,
             host=self._host(),
             max_text_chars=self.valves.MAX_TEXT_CHARS,
+            response_language=self.valves.RESPONSE_LANGUAGE,
         ):
             yield chunk

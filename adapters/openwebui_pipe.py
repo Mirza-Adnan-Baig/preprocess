@@ -8,7 +8,16 @@ from pydantic import BaseModel
 
 from src.faro_docs.answer import answer
 from src.faro_docs.ingest.router import ingest_all
-from src.faro_docs.messages_de import EXTRAHIERE, KEINE_DATEI, KEINE_TABELLE, RAG_WARNUNG
+from src.faro_docs.messages_de import (
+    EXTRAHIERE,
+    EXTRAHIERE_EN,
+    KEINE_DATEI,
+    KEINE_DATEI_EN,
+    KEINE_TABELLE,
+    KEINE_TABELLE_EN,
+    RAG_WARNUNG,
+    RAG_WARNUNG_EN,
+)
 
 _RAG_MARKERS = ("### Task:", "inline citations", "<source")
 _USER_QUERY = re.compile(r"<user_query>\s*(.*?)\s*</user_query>", re.DOTALL)
@@ -79,6 +88,7 @@ class Pipe:
         MODEL: str = "qwen3.6:27b"
         OLLAMA_HOST: str = ""
         MAX_TEXT_CHARS: int = 40000
+        RESPONSE_LANGUAGE: str = ""
 
     def __init__(self):
         self.id = "faro_document_assistant"
@@ -96,25 +106,26 @@ class Pipe:
 
     def pipe(self, body: dict, __files__: list = None, __user__: dict = None):
         message = body.get("messages", [{}])[-1].get("content", "")
+        forced_english = self.valves.RESPONSE_LANGUAGE == "en"
 
         if not __files__:
-            yield KEINE_DATEI
+            yield KEINE_DATEI_EN if forced_english else KEINE_DATEI
             return
 
         if looks_like_openwebui_rag(message):
-            yield RAG_WARNUNG + "\n"
+            yield (RAG_WARNUNG_EN if forced_english else RAG_WARNUNG) + "\n"
         question = recover_question(message)
 
-        yield EXTRAHIERE + "\n\n"
+        yield (EXTRAHIERE_EN if forced_english else EXTRAHIERE) + "\n\n"
 
         files = collect_files(__files__)
         if not files:
-            yield KEINE_DATEI
+            yield KEINE_DATEI_EN if forced_english else KEINE_DATEI
             return
 
         documents = ingest_all(files)
         if not any(document.tables for document in documents):
-            yield KEINE_TABELLE + "\n\n"
+            yield (KEINE_TABELLE_EN if forced_english else KEINE_TABELLE) + "\n\n"
 
         for chunk in answer(
             documents,
@@ -122,5 +133,6 @@ class Pipe:
             model=self.valves.MODEL,
             host=self._host(),
             max_text_chars=self.valves.MAX_TEXT_CHARS,
+            response_language=self.valves.RESPONSE_LANGUAGE,
         ):
             yield chunk
