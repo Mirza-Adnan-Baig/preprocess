@@ -34,8 +34,18 @@ class TestTools:
     def test_count_rows_for_one_table(self):
         assert run_tool("count_rows", {"table": "dok1:t1"}, _documents()) == 2
 
-    def test_count_rows_all_is_computed_in_code(self):
-        assert run_tool("count_rows", {"table": "alle"}, _documents()) == 3
+    def test_count_rows_alle_scopes_to_most_recently_attached_document(self):
+        """Open WebUI hands back every file ever attached in a chat on every
+        turn, with no way to tell 'just attached' apart from 'attached three
+        messages ago' -- 'alle' must not silently fold an older, no-longer-
+        relevant document into a plain 'how many rows' question."""
+        assert run_tool("count_rows", {"table": "alle"}, _documents()) == 1
+
+    def test_count_rows_alle_dokumente_is_the_real_cross_document_total(self):
+        assert run_tool("count_rows", {"table": "alle_dokumente"}, _documents()) == 3
+
+    def test_count_rows_alle_with_one_document_is_that_document(self):
+        assert run_tool("count_rows", {"table": "alle"}, _documents()[:1]) == 2
 
     def test_sum_column(self):
         assert run_tool("sum_column", {"table": "dok1:t1", "column": "Menge"},

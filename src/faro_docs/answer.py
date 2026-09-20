@@ -40,10 +40,17 @@ TOOL_SCHEMAS = [
         "name": "count_rows",
         "description": (
             "Zeilen einer Tabelle zählen. Mit table='alle' die Gesamtzahl über "
-            "alle Tabellen und Dokumente hinweg."
+            "alle Tabellen NUR im zuletzt angehängten Dokument (normale Wahl bei "
+            "einer einfachen Frage wie 'wie viele Zeilen'). Mit "
+            "table='alle_dokumente' die Gesamtzahl über wirklich JEDES "
+            "Dokument im Chat -- nur verwenden, wenn ausdrücklich nach allen "
+            "Dokumenten zusammen gefragt wird."
         ),
         "parameters": {"type": "object", "properties": {
-            "table": {"type": "string", "description": "Tabellen-Id oder 'alle'"},
+            "table": {
+                "type": "string",
+                "description": "Tabellen-Id, 'alle' (nur neuestes Dokument), oder 'alle_dokumente' (wirklich alles)",
+            },
         }, "required": ["table"]},
     }},
     {"type": "function", "function": {
@@ -80,15 +87,21 @@ SYSTEM_PROMPT = (
     "list_tables beziehungsweise list_documents beantworten, nie schätzen.\n"
     "3. Eine Datei kann mehrere Tabellen enthalten, und es können mehrere "
     "Dateien hochgeladen sein. Prüfe das, bevor du eine Zahl nennst.\n"
-    "4. Für Gesamtzahlen über alles hinweg count_rows mit table='alle' nutzen "
-    "oder den Wert aus FAKTEN._zusammenfassung übernehmen.\n"
-    "5. In diesem Chat können mehrere Dokumente aus verschiedenen Nachrichten "
+    "4. In diesem Chat können mehrere Dokumente aus verschiedenen Nachrichten "
     "vorliegen, auch aus früheren Uploads, die nichts mehr mit der aktuellen "
-    "Frage zu tun haben. Wenn die Frage sich nicht ausdrücklich auf mehrere "
-    "Dokumente, \"alle\" oder eine Gesamtsumme bezieht, geht es um das "
-    "zuletzt angehängte Dokument -- das ist FAKTEN._zusammenfassung."
-    "zuletzt_angehaengtes_dokument. Nicht automatisch mit älteren Dokumenten "
-    "kombinieren, nur weil sie noch im Chat vorhanden sind.\n"
+    "Frage zu tun haben. count_rows mit table='alle' bezieht sich deshalb "
+    "NUR auf das zuletzt angehängte Dokument (FAKTEN._zusammenfassung."
+    "zuletzt_angehaengtes_dokument) -- die normale Wahl bei einer einfachen "
+    "Frage wie \"wie viele Zeilen\". Nur wenn die Frage sich ausdrücklich auf "
+    "mehrere Dokumente oder alle zusammen bezieht, table='alle_dokumente' "
+    "verwenden oder FAKTEN._zusammenfassung.zeilen_gesamt übernehmen.\n"
+    "5. Für sum_column über mehrere Dokumente hinweg gibt es keinen "
+    "Werkzeug-Modus, weil Spalten in verschiedenen Dokumenten unterschiedliche "
+    "Bedeutung haben können. Frage nie mehrere Tabellen einzeln ab und "
+    "addiere die Ergebnisse selbst -- das ist genau die Art von Rechnung, "
+    "die nicht verlässlich ist (siehe Regel 1). Wenn eine Summe über mehrere "
+    "Dokumente hinweg verlangt wird, nenne stattdessen die Summe je Dokument "
+    "einzeln.\n"
     "6. Inhaltliche Fragen (Worum geht es? Wer ist der Absender? Was steht in "
     "Abschnitt 4?) direkt aus dem Dokumenttext beantworten.\n"
     "7. Steht die Antwort nicht im Dokument, sage genau das (in der Sprache "
@@ -139,8 +152,19 @@ def run_tool(name: str, args: dict, documents: list[Document]):
             for table_id, table in tables.items()
         }
 
-    if name == "count_rows" and args.get("table") == "alle":
+    if name == "count_rows" and args.get("table") == "alle_dokumente":
         return sum(table.row_count() for table in tables.values())
+
+    if name == "count_rows" and args.get("table") == "alle":
+        # Open WebUI hands back every file ever attached in a chat on every
+        # turn, with no signal telling the pipe which are newly attached vs.
+        # attached several messages ago -- a plain "how many rows" question
+        # after uploading a new file must not silently fold in an older,
+        # no-longer-relevant document. 'alle' therefore scopes to the most
+        # recently attached document only; 'alle_dokumente' above is the
+        # explicit escape hatch for a genuine cross-document question.
+        newest = documents[-1] if documents else None
+        return sum(table.row_count() for table in (newest.tables if newest else []))
 
     table_id = args.get("table")
     if table_id not in tables:
