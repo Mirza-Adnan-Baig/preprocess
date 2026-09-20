@@ -57,5 +57,10 @@ def compute_facts(documents: list[Document]) -> dict:
         "dokumente": len(documents),
         "tabellen": total_tables,
         "zeilen_gesamt": total_rows,
+        # Open WebUI hands back every file ever attached in a chat on every
+        # turn, with no signal distinguishing "just attached" from "attached
+        # several messages ago" -- this is the one thing the model can use
+        # to avoid defaulting to a combined answer across a stale document.
+        "zuletzt_angehaengtes_dokument": documents[-1].id if documents else None,
     }
     return facts

@@ -82,12 +82,19 @@ SYSTEM_PROMPT = (
     "Dateien hochgeladen sein. Prüfe das, bevor du eine Zahl nennst.\n"
     "4. Für Gesamtzahlen über alles hinweg count_rows mit table='alle' nutzen "
     "oder den Wert aus FAKTEN._zusammenfassung übernehmen.\n"
-    "5. Inhaltliche Fragen (Worum geht es? Wer ist der Absender? Was steht in "
+    "5. In diesem Chat können mehrere Dokumente aus verschiedenen Nachrichten "
+    "vorliegen, auch aus früheren Uploads, die nichts mehr mit der aktuellen "
+    "Frage zu tun haben. Wenn die Frage sich nicht ausdrücklich auf mehrere "
+    "Dokumente, \"alle\" oder eine Gesamtsumme bezieht, geht es um das "
+    "zuletzt angehängte Dokument -- das ist FAKTEN._zusammenfassung."
+    "zuletzt_angehaengtes_dokument. Nicht automatisch mit älteren Dokumenten "
+    "kombinieren, nur weil sie noch im Chat vorhanden sind.\n"
+    "6. Inhaltliche Fragen (Worum geht es? Wer ist der Absender? Was steht in "
     "Abschnitt 4?) direkt aus dem Dokumenttext beantworten.\n"
-    "6. Steht die Antwort nicht im Dokument, sage genau das (in der Sprache "
+    "7. Steht die Antwort nicht im Dokument, sage genau das (in der Sprache "
     "der Frage, z. B. „Das steht nicht im Dokument.“ auf Deutsch oder "
     "„That is not in the document.“ auf Englisch). Nichts erfinden.\n"
-    "7. Antworte in der Sprache, in der die Frage gestellt wurde -- Deutsch "
+    "8. Antworte in der Sprache, in der die Frage gestellt wurde -- Deutsch "
     "bei einer deutschen Frage, Englisch bei einer englischen Frage, "
     "ebenso in jeder anderen Sprache. Nicht die Sprache des Dokuments "
     "annehmen, wenn die Frage in einer anderen Sprache gestellt wurde. "
@@ -175,11 +182,14 @@ def run_tool(name: str, args: dict, documents: list[Document]):
 def build_context(documents: list[Document], max_text_chars: int = 40000) -> str:
     """Document text, table markdown, and code-computed facts."""
     parts = []
-    for document in documents:
+    for index, document in enumerate(documents):
         text = document.text or ""
         if len(text) > max_text_chars:
             text = text[:max_text_chars] + "\n…[Text gekürzt]"
-        parts.append(f"## Dokument {document.id}: {document.filename}\n{text}")
+        marker = (
+            " (zuletzt angehängt)" if len(documents) > 1 and index == len(documents) - 1 else ""
+        )
+        parts.append(f"## Dokument {document.id}: {document.filename}{marker}\n{text}")
         for table in document.tables:
             parts.append(
                 f"### {table.id} — {table.label} "

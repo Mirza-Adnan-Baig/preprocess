@@ -52,3 +52,17 @@ def test_facts_are_json_safe():
 
 def test_empty_input_does_not_crash():
     assert compute_facts([])["_zusammenfassung"]["zeilen_gesamt"] == 0
+    assert compute_facts([])["_zusammenfassung"]["zuletzt_angehaengtes_dokument"] is None
+
+
+def test_summary_names_the_last_document_as_most_recently_attached():
+    """Open WebUI hands every file ever attached in a chat back on every turn,
+    with no way to tell 'just attached' apart from 'attached three messages
+    ago' -- this is the one signal the model gets to avoid defaulting to a
+    combined answer across a document nobody's asking about anymore."""
+    docs = [
+        _document("dok1", pd.DataFrame({"Menge": [1.0, 2.0]})),
+        _document("dok2", pd.DataFrame({"Menge": [3.0]})),
+    ]
+    summary = compute_facts(docs)["_zusammenfassung"]
+    assert summary["zuletzt_angehaengtes_dokument"] == "dok2"
