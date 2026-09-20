@@ -47,11 +47,12 @@ unreachable for everyone, not just the person testing the pipeline.
 instead of an async one (the confirmed community workaround for this
 bug) — same streaming behavior, without the broken completion signal.
 
-**What to do:** re-paste the latest `openwebui/exact_count_pipe.py` from
-this repo into Admin Panel → Functions (replace the old version), save,
-and try again. If Open WebUI itself was left unreachable from a previous
-hung attempt, it may need a restart first (ask IT, or restart it yourself
-if you have that access) before testing again.
+**What to do:** run `python -m tools.build_bundle` to regenerate
+`openwebui/faro_document_assistant.py`, then re-paste that file into
+Admin Panel → Functions (replace the old version), save, and try again.
+If Open WebUI itself was left unreachable from a previous hung attempt,
+it may need a restart first (ask IT, or restart it yourself if you have
+that access) before testing again.
 
 ## What this error actually means
 
