@@ -1,3 +1,7 @@
+> **Deploying at the office?** Use [`DEPLOY.md`](DEPLOY.md) instead — this
+> file is the original build history and is partly outdated (Phase 0
+> content still mixed in with Phase 1).
+
 # Start here
 
 You were asleep while this got built. This document assumes you know

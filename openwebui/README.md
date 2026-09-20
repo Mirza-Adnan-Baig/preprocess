@@ -1,3 +1,8 @@
+> **Deploying at the office?** Use [`../DEPLOY.md`](../DEPLOY.md) instead —
+> it's the clean, current, step-by-step guide. This file has extra
+> diagnostic-pipe detail that's occasionally still useful if something
+> doesn't work as expected there.
+
 # Open WebUI integration (Phase 1)
 
 **Status: verified working end-to-end (2026-09-19)** against a real local
