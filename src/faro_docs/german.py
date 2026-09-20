@@ -163,3 +163,82 @@ def to_numeric_series(series: pd.Series, style: str) -> pd.Series:
     return pd.Series(
         [parse_number(v, style) for v in series], index=series.index, dtype="float64"
     )
+
+
+import unicodedata
+
+_UMLAUT_MAP = str.maketrans(
+    {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss", "Ä": "ae", "Ö": "oe", "Ü": "ue"}
+)
+
+
+def decode_text(raw: bytes) -> tuple[str, str]:
+    """Decode uploaded bytes to text, repairing German mojibake.
+
+    German CSV exports are frequently cp1252, and text that has already been
+    decoded wrongly upstream arrives as StraÃŸe rather than Straße. ftfy fixes
+    the second case; it is bundled with Open WebUI so it costs no dependency.
+    """
+    text = None
+    encoding = "utf-8"
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            from charset_normalizer import from_bytes
+
+            best = from_bytes(raw).best()
+            if best is not None:
+                text = str(best)
+                encoding = best.encoding
+        except Exception:
+            text = None
+    if text is None:
+        try:
+            text = raw.decode("cp1252")
+            encoding = "cp1252"
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+            encoding = "utf-8 (mit Ersatzzeichen)"
+
+    try:
+        from ftfy import fix_text
+
+        text = fix_text(text)
+    except Exception:
+        pass
+    return text, encoding
+
+
+def detect_delimiter(text: str) -> str:
+    """Pick the delimiter that splits rows most consistently.
+
+    csv.Sniffer is unreliable here: German files start with invoice preamble
+    lines and contain decimal commas, both of which mislead it.
+    """
+    lines = [line for line in text.splitlines() if line.strip()][:30]
+    if not lines:
+        return ";"
+
+    best_delimiter = ";"
+    best_score = (0, 0.0)
+    for candidate in (";", "\t", "|", ","):
+        counts = [line.count(candidate) for line in lines]
+        populated = [c for c in counts if c > 0]
+        if len(populated) < 2:
+            continue
+        most_common = max(set(populated), key=populated.count)
+        consistency = populated.count(most_common) / len(populated)
+        score = (most_common, consistency)
+        if score > best_score:
+            best_score = score
+            best_delimiter = candidate
+    return best_delimiter
+
+
+def fold(value: str) -> str:
+    """Case- and diacritic-insensitive key for matching German words."""
+    text = str(value).strip().translate(_UMLAUT_MAP)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return "".join(ch for ch in text.lower() if ch.isalnum())
