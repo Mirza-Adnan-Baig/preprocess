@@ -89,6 +89,7 @@ class Pipe:
         OLLAMA_HOST: str = ""
         MAX_TEXT_CHARS: int = 40000
         RESPONSE_LANGUAGE: str = ""
+        NUM_CTX: int = 16384
 
     def __init__(self):
         self.id = "faro_document_assistant"
@@ -134,5 +135,6 @@ class Pipe:
             host=self._host(),
             max_text_chars=self.valves.MAX_TEXT_CHARS,
             response_language=self.valves.RESPONSE_LANGUAGE,
+            num_ctx=self.valves.NUM_CTX,
         ):
             yield chunk

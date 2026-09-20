@@ -3,7 +3,6 @@
 import json
 import queue
 import threading
-import time
 from collections.abc import Iterator
 
 import pandas as pd
@@ -107,7 +106,11 @@ SYSTEM_PROMPT = (
     "Dokumente hinweg verlangt wird, nenne stattdessen die Summe je Dokument "
     "einzeln.\n"
     "6. Inhaltliche Fragen (Worum geht es? Wer ist der Absender? Was steht in "
-    "Abschnitt 4?) direkt aus dem Dokumenttext beantworten.\n"
+    "Abschnitt 4?) direkt aus dem Dokumenttext beantworten. Für den Wert einer "
+    "einzelnen Zeile oder Spalte (z. B. \"Welchen EAN-Code hat Zeile 6?\") "
+    "IMMER get_row oder find_rows aufrufen -- auch wenn die Zeile oben in der "
+    "Tabelle bereits sichtbar ist. Nie behaupten, ein Wert sei nicht "
+    "verfügbar, ohne das Werkzeug versucht zu haben.\n"
     "7. Steht die Antwort nicht im Dokument, sage genau das (in der Sprache "
     "der Frage, z. B. „Das steht nicht im Dokument.“ auf Deutsch oder "
     "„That is not in the document.“ auf Englisch). Nichts erfinden.\n"
@@ -119,8 +122,10 @@ SYSTEM_PROMPT = (
 )
 
 _FORCE_ENGLISH = (
-    "\n\nOVERRIDE: always answer in English, regardless of the language "
-    "the question was asked in. This overrides rule 7 above."
+    "\n\nOVERRIDE (takes precedence over every rule above, including rule 8): "
+    "you must answer only in English, in every single reply, no matter what "
+    "language the question, the document, or its content is in. Never answer "
+    "in German or any other language, even partially."
 )
 
 
@@ -232,9 +237,14 @@ def build_context(documents: list[Document], max_text_chars: int = 40000) -> str
 
 _HEARTBEAT = object()
 _DONE = object()
+# Renders as nothing in Markdown/HTML, so repeated keep-alive ticks after the
+# first one stay invisible to the reader while still putting bytes on the
+# wire -- Open WebUI/the browser can otherwise treat a long silent gap during
+# Ollama's prefill as a dead connection and drop it (see _stream_with_heartbeat).
+_KEEPALIVE = "​"
 
 
-def _stream_with_heartbeat(client, model, messages, tools, interval=3.0):
+def _stream_with_heartbeat(client, model, messages, tools, interval, num_ctx):
     """Ollama prefills a long document before emitting anything; a silent gap
     that long drops the browser connection, so emit a heartbeat while waiting."""
     channel: queue.Queue = queue.Queue()
@@ -242,7 +252,8 @@ def _stream_with_heartbeat(client, model, messages, tools, interval=3.0):
     def worker():
         try:
             for chunk in client.chat(
-                model=model, messages=messages, tools=tools, stream=True
+                model=model, messages=messages, tools=tools, stream=True,
+                options={"num_ctx": num_ctx},
             ):
                 channel.put(chunk)
         except Exception as error:
@@ -272,6 +283,8 @@ def answer(
     max_rounds: int = 6,
     max_text_chars: int = 40000,
     response_language: str = "",
+    heartbeat_interval: float = 3.0,
+    num_ctx: int = 16384,
 ) -> Iterator[str]:
     """Plain sync generator -- async pipes never signal completion (open-webui#20196).
 
@@ -281,6 +294,20 @@ def answer(
     this pipe's own status/error messages, and the notes ingestion produces
     -- for local testing by someone who doesn't read German. The real
     office deployment leaves this at its default.
+
+    heartbeat_interval: how often (seconds) to poll for output while Ollama
+    prefills. Only ever tunable for tests -- production leaves it at the
+    default.
+
+    num_ctx: Ollama's context window in tokens, passed explicitly on every
+    request. Ollama silently defaults an unconfigured model to 4096 tokens
+    regardless of what the model itself supports (confirmed via `ollama ps`)
+    -- a real document's extracted text plus its table markdown plus FAKTEN
+    can exceed that on a table with a couple hundred rows, at which point
+    Ollama quietly drops the *oldest* part of the prompt to fit, and the
+    model answers confidently from a table it never actually saw in full.
+    16384 comfortably covers the default MAX_TEXT_CHARS (40000 chars); raise
+    both together if MAX_TEXT_CHARS is raised.
     """
     import ollama
 
@@ -296,18 +323,23 @@ def answer(
     for _ in range(max_rounds):
         content = ""
         tool_calls = None
-        started = time.monotonic()
         seen_output = False
+        heartbeat_shown = False
         try:
-            for item in _stream_with_heartbeat(client, model, messages, tools):
+            for item in _stream_with_heartbeat(
+                client, model, messages, tools,
+                interval=heartbeat_interval, num_ctx=num_ctx,
+            ):
                 if item is _HEARTBEAT:
                     if not seen_output:
-                        template = (
-                            DENKT_NACH_EN if response_language == "en" else DENKT_NACH
-                        )
-                        yield template.format(
-                            sekunden=int(time.monotonic() - started)
-                        ) + " "
+                        if not heartbeat_shown:
+                            template = (
+                                DENKT_NACH_EN if response_language == "en" else DENKT_NACH
+                            )
+                            yield template + "\n\n"
+                            heartbeat_shown = True
+                        else:
+                            yield _KEEPALIVE
                     continue
                 seen_output = True
                 piece = item.get("message", {}).get("content", "")

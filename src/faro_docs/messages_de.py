@@ -11,7 +11,7 @@ import re
 
 KEINE_DATEI = "Bitte hängen Sie eine Datei an Ihre Frage an (PDF, Excel, CSV oder Text)."
 EXTRAHIERE = "_(Dokument wird ausgewertet …)_"
-DENKT_NACH = "_(arbeitet noch, {sekunden} s …)_"
+DENKT_NACH = "_(Moment, die Antwort wird vorbereitet …)_"
 KEINE_TABELLE = (
     "In dieser Datei wurde keine auswertbare Tabelle gefunden. "
     "Fragen nach genauen Anzahlen oder Summen kann ich deshalb nicht sicher beantworten."
@@ -34,7 +34,7 @@ RAG_WARNUNG = (
 
 KEINE_DATEI_EN = "Please attach a file to your question (PDF, Excel, CSV, or text)."
 EXTRAHIERE_EN = "_(analyzing document …)_"
-DENKT_NACH_EN = "_(still working, {sekunden}s …)_"
+DENKT_NACH_EN = "_(One moment, preparing the answer …)_"
 KEINE_TABELLE_EN = (
     "No usable table was found in this file. "
     "Exact counts or sums can't be answered reliably as a result."
