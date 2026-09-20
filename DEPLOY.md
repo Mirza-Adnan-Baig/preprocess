@@ -77,14 +77,15 @@ it.
 ## Step 4 — Configure it for your setup
 
 Click the function's gear icon (Admin Panel → Functions) to see its
-settings. Four values, all optional to change:
+settings. Five values, all optional to change:
 
 | Setting | Default | What it means |
 |---|---|---|
 | `MODEL` | `qwen3.6:27b` | Must exactly match what `ollama list` shows on the Mac Studio. Change this if the model is tagged differently. |
 | `OLLAMA_HOST` | *(empty → auto)* | Where to reach Ollama. Leave empty first — it tries a couple of sensible defaults automatically. Only set this yourself if you get a "model not reachable" error (see Troubleshooting). |
 | `MAX_TEXT_CHARS` | `40000` | How much of a document's raw text gets sent to the model before it's trimmed (with a visible notice, never silently). Table data and computed counts are never affected by this — only free-text answers on a very long document. |
-| `RESPONSE_LANGUAGE` | *(empty → dynamic)* | Leave empty for real use: it answers in whichever language the question was asked in. Set to `en` only for your own testing if you don't want to read German status messages. |
+| `NUM_CTX` | `16384` | Ollama's context window, in tokens. **Important:** Ollama silently defaults an unconfigured model to a 4096-token window regardless of what the model itself supports — confirmed directly against a real local model with `ollama ps`. A document with a couple hundred table rows can already exceed that, and Ollama's response to running out of room is to quietly drop the *oldest* part of the prompt, not to show an error — the model then answers confidently from a table it never fully saw. 16384 comfortably covers the default `MAX_TEXT_CHARS`. If you ever raise `MAX_TEXT_CHARS`, raise this too. You can confirm the real value in effect at any time by running `ollama ps` on the Mac Studio right after asking a question — the `CONTEXT` column should read `16384` (or whatever you set), not `4096`. |
+| `RESPONSE_LANGUAGE` | *(empty → dynamic)* | Leave empty for real use: it answers in whichever language the question was asked in. Set to `en` only for your own testing if you don't want to read German status messages — see the note about this under "Known limitations" below, since small models don't always honor it. |
 
 ## Step 5 — Try it
 
@@ -124,6 +125,13 @@ re-create it from scratch rather than editing in place.
 - Correctly reads German number formats (`1.234,56`), German CSV
   delimiters (`;`), and excludes a "Gesamt" total row from being
   double-counted.
+- Never mistakes an ID-like column (EAN/barcode, article number, postal
+  code — anything that's just digits, possibly with a leading zero) for a
+  quantity. Found on a real product export: a column of EAN codes was
+  being silently turned into numbers, stripping the leading zero from
+  every code that had one (`0107610691403` became `107610691403` — a
+  different, wrong code). Fixed at the root: any column with a leading
+  zero anywhere in it is now always kept as exact text.
 - Answers ordinary questions too — summaries, "who is the sender",
   "what does this say" — directly from the document's real text, not
   just counting questions.
@@ -162,34 +170,68 @@ newly generated file — don't edit in place, see the troubleshooting note
 above about partial pastes). Step 3 only needs to be re-run if you
 recreate the function under a different id; otherwise it stays in effect.
 
-## Known issue found after deployment (2026-09-21)
+## Known limitations
 
-Open WebUI hands the pipe **every file ever attached in a chat thread**
-on every turn, with no way to tell "just attached" apart from "attached
-several messages ago" — checked directly, there is no such signal
-anywhere in what Open WebUI provides. Attaching a new file mid-conversation
-used to make the pipe silently combine it with an older, no-longer-relevant
-one.
+Everything in this section was found by actually testing against real
+files (a real payslip, a real 173-row CSV export, a real 297-row product
+list, real academic PDFs, a real university certificate) and a real local
+Ollama model, not synthetic test fixtures. Each item below is labelled as
+either a fixed code bug or an open model-quality gap, so it's clear which
+ones a bigger production model should resolve on its own and which ones
+were actually fixed in this code.
 
-**Fixed at the code level:** a plain question like "how many rows" now
-correctly computes only the most recently attached document's numbers —
-verified directly via the tool-call trace shown in the chat (look for
-`count_rows({'table': 'alle'})` in the response; the number next to the
-arrow is what was actually computed, always correct going forward).
+**Fixed at the code level, this round:**
 
-**Not fully fixed — a model-quality gap, not a code bug:** the small
-local test model (`qwen2.5:7b`) doesn't always faithfully repeat that
-correct computed number in its final written sentence — sometimes it
-still mentions an older aggregate instead, inconsistently (confirmed:
-identical repeated test, one run stated both numbers, the next dropped
-the correct one). The underlying data is always correct by this point;
-what's unreliable is a small model's prose. This needs re-testing against
-the real production model (Qwen3.6-27B) before trusting it fully — small
-local models are consistently less reliable at this kind of instruction
-than the production model is expected to be, per multiple earlier
-findings in this project.
+- Open WebUI hands the pipe *every file ever attached in a chat thread* on
+  every turn, with no signal telling "just attached" apart from "attached
+  several messages ago." A plain question like "how many rows" now
+  correctly scopes to only the most recently attached document — verified
+  via the tool-call trace shown in the chat (`count_rows({'table': 'alle'})`,
+  the number next to the arrow is always correct).
+- ID-like numeric columns (see "What this can do" above) are no longer
+  silently corrupted by being treated as numbers.
+- A document large enough to exceed Ollama's real default context window
+  (4096 tokens — see the `NUM_CTX` row above) no longer gets silently
+  truncated mid-table before the model ever sees it.
 
-**Practical advice until re-verified:** if a question follows an earlier
-file in the same chat and the answer looks combined or stale, check the
-tool-call trace line for the real number, or start a new chat per document
-to be certain.
+**Open model-quality gaps — expected to improve with the real production
+model, not fixable by more code:**
+
+- **Specific-value lookups on a table with a couple hundred rows or more**
+  are unreliable on a small model even though the correct value is
+  genuinely present in what it's shown, and even though a `get_row`/
+  `find_rows` tool exists specifically for this (the prompt now
+  explicitly tells it to use them). Tested directly against a real
+  297-row product list on the local 7B test model: it either claimed the
+  value wasn't available, or invented a plausible-looking wrong one,
+  every time. Broad questions ("what's this document about", "how many
+  rows total") and directly-quotable facts near the top of a document
+  (an ID number, a date, a short table) were answered correctly and
+  consistently in the same tests. Re-verify specifically the
+  large-table-row-lookup case against the real production model before
+  trusting it there.
+- **`RESPONSE_LANGUAGE=en` (testing only) isn't always honored** when the
+  source document itself is in German — the small local test model
+  sometimes answers in German anyway despite an explicit, repeated
+  instruction not to. The *data* in the answer was correct both times
+  this was tested; only the language of the sentence around it was wrong.
+  Not expected to be a real-world problem: the actual office default
+  (`RESPONSE_LANGUAGE=""`, matching whatever language the question itself
+  was asked in) doesn't depend on overriding the document's own language.
+- **A small model can still mention a stale cross-document aggregate**
+  in its written sentence even when the underlying tool call it made was
+  correctly scoped (confirmed: identical repeated test, one run mentioned
+  it, the next didn't). If an answer after several file uploads in one
+  chat looks combined or stale, check the tool-call trace line for the
+  real number, or start a new chat per document to be certain.
+- One narrow, quantified totals-row edge case remains: on an invoice
+  where every line item costs exactly the same amount, there's roughly a
+  1-in-25 chance the last line item is mistaken for a totals row (see
+  "What this can't do yet" below).
+
+**One operational tip, not a bug:** Open WebUI's own automatic chat-title,
+tag, and follow-up-question generation (Admin Panel → Settings → Interface)
+run extra requests against the *same* Ollama model right around when it's
+also answering the real question. If GPU/RAM is tight on the Mac Studio,
+turning those three off keeps the model's full attention on the actual
+document instead of context-switching between unrelated requests.
