@@ -3,7 +3,20 @@ from urllib.error import HTTPError
 
 import pytest
 
-from tools.setup_openwebui import disable_file_context
+from tools.setup_openwebui import _normalize_base_url, disable_file_context
+
+
+class TestNormalizeBaseUrl:
+    def test_strips_a_trailing_slash(self):
+        """A trailing slash made a real office deployment's sign-in request
+        fail with HTTPError 405 (the appended path became a double slash)."""
+        assert _normalize_base_url("http://192.168.1.50:3000/") == "http://192.168.1.50:3000"
+
+    def test_strips_multiple_trailing_slashes(self):
+        assert _normalize_base_url("http://192.168.1.50:3000///") == "http://192.168.1.50:3000"
+
+    def test_leaves_a_clean_url_unchanged(self):
+        assert _normalize_base_url("http://192.168.1.50:3000") == "http://192.168.1.50:3000"
 
 
 class _FakeResponse:

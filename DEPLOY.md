@@ -70,14 +70,38 @@ either, this exact same command can be run from any other machine on the
 same network, pointed at the Mac Studio's Open WebUI address instead of
 `localhost:3000`).
 
+**After this command succeeds, hard-refresh the browser page (Ctrl+R /
+Cmd+R) and start a brand-new chat before testing** — reusing a chat/tab
+that was already open before this step ran can still show the old,
+un-fixed behaviour, because the browser cached the model list from
+before the change. Confirmed at a real deployment: the command had
+already succeeded, but the very next question — asked in a chat that
+was open beforehand — still showed the RAG warning below, until a fresh
+chat was started.
+
 If you ever see a message starting with **"Achtung: Die eingebaute
-Dateiverarbeitung..."** in a chat, this step didn't take effect — re-run
-it.
+Dateiverarbeitung..."** in a chat, either this step didn't run
+successfully, or you need the refresh-and-new-chat step above — re-run
+the command, then refresh and start a new chat.
+
+**If the command itself fails with `HTTPError 405`:** check the `--url`
+you typed doesn't end in a trailing slash. `http://192.168.1.50:3000/`
+(trailing `/`) breaks it; `http://192.168.1.50:3000` (no trailing `/`)
+works. As of this version the script strips a trailing slash for you
+automatically, so this should no longer happen — if you still see it,
+you're running an older copy of the script (`git pull` and try again).
 
 ## Step 4 — Configure it for your setup
 
-Click the function's gear icon (Admin Panel → Functions) to see its
-settings. Five values, all optional to change:
+Admin Panel → **Functions** → find **"FARO Dokument-Assistent"** in the
+list → click the small **gear icon** on that row → a **"Valves"** popup
+opens listing every setting below, each currently marked **Default** or
+**Custom** on the right.
+
+To change one: click the word **Default** next to that setting — it
+switches to **Custom** and a text box appears right below it. Type the
+new value into that box, then click **Save** at the bottom of the popup.
+Five values, all optional to change:
 
 | Setting | Default | What it means |
 |---|---|---|
@@ -98,11 +122,24 @@ work.
 
 **"Das Sprachmodell ist unter `...` nicht erreichbar" / model not
 reachable.** Almost always means `OLLAMA_HOST` is wrong, not that Ollama
-is actually down. If Open WebUI runs in Docker on the Mac Studio,
-`localhost` inside that container is *not* the Mac itself — try
-`http://host.docker.internal:11434` as the `OLLAMA_HOST` value. If Open
-WebUI is a plain (non-Docker) install, leaving `OLLAMA_HOST` empty should
-just work.
+is actually down. If you don't know whether Open WebUI runs in Docker on
+the Mac Studio (and can't easily check), try these `OLLAMA_HOST` values
+in this order — set each one using the click-path in Step 4, save, start
+a new chat, and test again before moving to the next:
+
+1. Leave it empty (**Default**) first — works if Open WebUI is a plain,
+   non-Docker install.
+2. `http://host.docker.internal:11434` — the fix if Open WebUI runs in
+   Docker on the Mac Studio (`localhost` inside that container is *not*
+   the Mac itself).
+3. `http://<mac-studio-lan-ip>:11434` — the Mac Studio's own network
+   address (the same one used to reach Open WebUI itself, e.g. the
+   `192.168.x.x` from the browser's address bar), port `11434` instead
+   of `3000`.
+
+If none of those work, it's worth asking whoever manages that Mac
+directly: is Ollama reachable at `localhost:11434` on it, and is Open
+WebUI running in a Docker container?
 
 **A warning about "eingebaute Dateiverarbeitung" appears in the chat.**
 Step 3 wasn't run, or didn't take effect. Re-run it.

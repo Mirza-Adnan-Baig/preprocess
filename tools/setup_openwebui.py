@@ -32,6 +32,18 @@ def _get(url: str, token: str) -> dict:
         return json.loads(response.read())
 
 
+def _normalize_base_url(url: str) -> str:
+    """Strip any trailing slash(es).
+
+    A URL like "http://host:3000/" builds "http://host:3000//api/v1/..."
+    (double slash) once "/api/v1/..." is appended -- confirmed at a real
+    office deployment to make the very first request (sign-in) fail with
+    HTTPError 405 instead of a clearer error, since the server sees a
+    different path than intended.
+    """
+    return url.rstrip("/")
+
+
 def sign_in(base_url: str, email: str, password: str) -> str:
     result = _post(
         f"{base_url}/api/v1/auths/signin", "", {"email": email, "password": password}
@@ -70,9 +82,10 @@ def main() -> None:
     parser.add_argument("--password", required=True)
     parser.add_argument("--model-id", default=MODEL_ID)
     args = parser.parse_args()
+    url = _normalize_base_url(args.url)
 
-    token = sign_in(args.url, args.email, args.password)
-    result = disable_file_context(args.url, token, args.model_id)
+    token = sign_in(url, args.email, args.password)
+    result = disable_file_context(url, token, args.model_id)
     print(f"file_context abgeschaltet ({result['aktion']}) für {result['model_id']}.")
 
 
