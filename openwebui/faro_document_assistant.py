@@ -1323,10 +1323,13 @@ def answer(
     max_rounds: int = 6,
     max_text_chars: int = 40000,
     response_language: str = "",
-    heartbeat_interval: float = 3.0,
+    heartbeat_interval: float = 0.5,
     num_ctx: int = 16384,
 ) -> Iterator[str]:
-    """Plain sync generator -- async pipes never signal completion (open-webui#20196).
+    """Plain sync generator -- async pipes never signal completion (open-webui#20196,
+    confirmed still present in a real 0.11.3 install: an async pipe's final
+    message does arrive, but the UI's "Stop" button never clears and the
+    chat is stuck looking like it's still generating).
 
     response_language: "" (default) lets the model match whatever language
     the question was asked in, and keeps this pipe's own fixed messages in
@@ -1336,8 +1339,17 @@ def answer(
     office deployment leaves this at its default.
 
     heartbeat_interval: how often (seconds) to poll for output while Ollama
-    prefills. Only ever tunable for tests -- production leaves it at the
-    default.
+    prefills. Open WebUI (functions.py) iterates this generator with a
+    plain synchronous `for` loop inside an async function, so every single
+    poll genuinely blocks its *entire* event loop -- not just this chat's
+    request -- for up to this many seconds at a time (confirmed by reading
+    Open WebUI's own source). A long prefill is many such polls back to
+    back, which is why the browser's own websocket can show "connection
+    lost, reconnecting" for the whole wait even though the request itself
+    is fine and completes correctly. Kept short so each individual freeze
+    is brief enough that it usually doesn't trip the websocket's own
+    timeout, rather than a few long freezes that reliably do. Also tunable
+    for tests, to run them fast.
 
     num_ctx: Ollama's context window in tokens, passed explicitly on every
     request. Ollama silently defaults an unconfigured model to 4096 tokens

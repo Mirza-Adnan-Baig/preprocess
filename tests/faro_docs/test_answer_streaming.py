@@ -7,6 +7,7 @@ per tick, with any further ticks reduced to an invisible keep-alive so the
 connection still sees regular bytes.
 """
 
+import inspect
 import time
 
 import pandas as pd
@@ -14,6 +15,18 @@ import pytest
 
 from src.faro_docs.answer import DENKT_NACH, DENKT_NACH_EN, _KEEPALIVE, answer
 from src.faro_docs.model import ColumnInfo, Document, Table
+
+
+def test_default_heartbeat_interval_is_short():
+    """Open WebUI (functions.py) iterates this generator with a plain
+    synchronous `for` loop inside an async function -- confirmed by reading
+    its source -- so every single poll genuinely blocks its *entire* event
+    loop, not just this chat's request, for up to heartbeat_interval
+    seconds. A long default here reopened exactly the "connection lost,
+    reconnecting" symptom this project exists to avoid, confirmed live at
+    a real office deployment. Keep it short."""
+    default = inspect.signature(answer).parameters["heartbeat_interval"].default
+    assert default <= 1.0
 
 
 def _document():

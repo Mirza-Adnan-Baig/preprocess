@@ -230,6 +230,24 @@ were actually fixed in this code.
 - A document large enough to exceed Ollama's real default context window
   (4096 tokens — see the `NUM_CTX` row above) no longer gets silently
   truncated mid-table before the model ever sees it.
+- **The browser's own connection can drop and reconnect while a long
+  answer is being generated** (a "connection lost, reconnecting..." banner
+  during the wait) — confirmed at a real office deployment. Root cause,
+  confirmed by reading Open WebUI's own source: this version iterates the
+  pipe's response using a plain, synchronous loop inside its own async
+  code, which genuinely freezes the *entire* Open WebUI server (not just
+  this one chat) for as long as a single wait between chunks lasts. A
+  long prefill on a big document is many such waits back to back. This
+  can't be fully eliminated without Open WebUI itself changing how it
+  reads a Function's response (confirmed directly: switching to the
+  "proper" async style trades this for a *worse* bug already present in
+  this exact version — the reply arrives but the send button never
+  re-enables, so the chat looks permanently stuck instead of just
+  reconnecting). What *is* fixed: each individual wait is now much
+  shorter, so any single freeze is far less likely to actually trip the
+  browser's own reconnect logic. The request itself always completes
+  correctly either way — this is a cosmetic freeze during the wait, not
+  a failure.
 
 **Open model-quality gaps — expected to improve with the real production
 model, not fixable by more code:**
