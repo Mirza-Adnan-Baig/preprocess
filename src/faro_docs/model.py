@@ -34,6 +34,7 @@ class Document:
     text: str = ""
     tables: list[Table] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    page_count: int = 0  # 0 when the format has no pages (CSV, Excel, text)
 
     def total_rows(self) -> int:
         return sum(table.row_count() for table in self.tables)

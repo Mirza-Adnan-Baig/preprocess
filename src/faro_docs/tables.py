@@ -173,9 +173,22 @@ def build_table(
     body = rows[header_index + 1 :]
 
     names: list[str] = []
+    seen: dict[str, int] = {}
     for position, cell in enumerate(header, start=1):
         text = "" if cell is None else str(cell).strip()
-        names.append(text or f"Spalte {position}")
+        name = text or f"Spalte {position}"
+        # Two columns with the same header is normal in a real export (two
+        # EAN columns, or the same header repeated after a merge). Left
+        # alone, pandas hands back a DataFrame instead of a Series for that
+        # name and ingestion dies with an AttributeError -- the whole file
+        # fails, not just one answer. Later repeats get a numbered suffix;
+        # the first keeps the original name so ordinary references work.
+        if name in seen:
+            seen[name] += 1
+            name = f"{name} ({seen[name]})"
+        else:
+            seen[name] = 1
+        names.append(name)
 
     width = len(names)
     padded = [list(row)[:width] + [None] * max(0, width - len(row)) for row in body]

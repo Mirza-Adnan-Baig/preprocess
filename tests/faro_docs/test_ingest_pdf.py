@@ -63,3 +63,63 @@ def test_pdf_without_tables_still_returns_text(tmp_path):
     doc = ingest_pdf(path.read_bytes(), document_id="dok1", filename="brief.pdf")
     assert doc.tables == []
     assert "Sehr geehrte" in doc.text
+
+
+def test_page_count_is_recorded(tmp_path):
+    """'Wie viele Seiten hat das Dokument?' is a plain, common question
+    and the answer was simply thrown away before."""
+    body = [[f"Artikel {i}", str(i)] for i in range(1, 120)]
+    path = _build_pdf(tmp_path / "viele.pdf", [("FARO GmbH", ["Artikel", "Menge"], body)])
+    doc = ingest_pdf(path.read_bytes(), document_id="dok1", filename="viele.pdf")
+    assert doc.page_count >= 2
+
+
+def test_cosmetic_header_differences_between_pages_still_merge(tmp_path):
+    """The same table continued on a later page routinely re-prints its
+    header with different spacing or capitalisation. Keying the merge on
+    the raw header text split one logical table into a pile of
+    near-duplicates, each holding a fraction of the rows -- so a count on
+    a 41-page catalogue would report only the rows of whichever fragment
+    the model happened to pick."""
+    first = [[f"Artikel {i}", str(i)] for i in range(1, 30)]
+    second = [[f"Artikel {i}", str(i)] for i in range(30, 60)]
+    path = _build_pdf(
+        tmp_path / "kopf.pdf",
+        [
+            ("Katalog", ["Barcode-EAN", "Menge"], first),
+            ("Katalog", ["BARCODE-EAN ", " Menge"], second),
+        ],
+    )
+    doc = ingest_pdf(path.read_bytes(), document_id="dok1", filename="kopf.pdf")
+    assert len(doc.tables) == 1, "cosmetic header differences must not split the table"
+    assert doc.tables[0].row_count() == 59
+
+
+def test_faro_style_invoice_end_to_end(tmp_path):
+    """The real invoice shape: article number, description, barcode/EAN,
+    unit price in German format, quantity, line total."""
+    from src.faro_docs.answer import run_tool
+
+    body = [
+        ["33447", "Akku mit TI-IC Chip fuer Apple iPhone 7 Plus",
+         "4051805334476", "4,86", "1", "4,86"],
+        ["32965", "LCD + Touch fuer Apple iPhone 7 Plus AAA+",
+         "4051805329656", "10,93", "1", "10,93"],
+    ]
+    path = _build_pdf(
+        tmp_path / "rechnung.pdf",
+        [("RECHNUNG 26-126920",
+          ["Artikelnr.", "Bezeichnung", "Barcode-EAN", "Einzelpreis", "Menge", "Gesamtpreis"],
+          body)],
+    )
+    doc = ingest_pdf(path.read_bytes(), document_id="dok1", filename="rechnung.pdf")
+    table = doc.tables[0]
+
+    assert table.row_count() == 2
+    # the barcode column must survive as exact text, not become a float
+    assert "4051805334476" in table.frame["Barcode-EAN"].astype(str).tolist()
+    # and the money adds up through the normal tool path
+    total = run_tool(
+        "sum_column", {"table": table.id, "column": "Gesamtpreis"}, [doc]
+    )
+    assert total["summe"] == pytest.approx(15.79)

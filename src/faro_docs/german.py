@@ -123,7 +123,14 @@ def detect_numeric_format(
     if plain_values:
         min_length = min(len(v) for v in plain_values)
         unique_ratio = len(set(plain_values)) / len(plain_values)
-        if min_length >= 8 and unique_ratio >= 0.8:
+        # 12+ digits is EAN-13 / UPC-12 / GTIN-14 / account-number territory
+        # and is never a quantity, however often a value repeats -- a real
+        # catalogue legitimately lists the same EAN on several rows, and
+        # requiring near-uniqueness let exactly that case slip through and
+        # be turned into a float (barcodes then printed as
+        # "4051805300000.0"). Between 8 and 11 digits the reading is less
+        # obvious, so near-uniqueness is still required there.
+        if min_length >= 12 or (min_length >= 8 and unique_ratio >= 0.8):
             # No leading zero this time, but a column of long (8+ digit),
             # near-unique plain numbers is still an identifier (EAN/GTIN,
             # barcode, IBAN-like account number), never a real quantity --

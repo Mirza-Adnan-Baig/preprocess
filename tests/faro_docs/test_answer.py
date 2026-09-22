@@ -48,8 +48,17 @@ class TestTools:
         assert run_tool("count_rows", {"table": "alle"}, _documents()[:1]) == 2
 
     def test_sum_column(self):
-        assert run_tool("sum_column", {"table": "dok1:t1", "column": "Menge"},
-                        _documents()) == pytest.approx(3.0)
+        result = run_tool("sum_column", {"table": "dok1:t1", "column": "Menge"}, _documents())
+        assert result["summe"] == pytest.approx(3.0)
+
+    def test_sum_column_states_that_it_summed_every_row(self):
+        """Confirmed live: asked what one group of parts costs, a model
+        called this tool unfiltered and reported the whole table's total
+        as that group's total. The number wasn't invented, its scope was
+        mislabelled -- so the scope travels with the number now."""
+        result = run_tool("sum_column", {"table": "dok1:t1", "column": "Menge"}, _documents())
+        assert result["zeilen_einbezogen"] == 2
+        assert "query_table" in result["hinweis"]
 
     def test_sum_of_non_numeric_column_raises_rather_than_returning_zero(self):
         with pytest.raises(ValueError):
@@ -209,4 +218,5 @@ class TestContext:
         documents[0].text = "x" * 100_000
         context = build_context(documents, max_text_chars=1000)
         assert len(context) < 60_000
-        assert "gekürzt" in context.lower()
+        assert "ausgelassen" in context.lower()
+        assert "search_text" in context  # and says how to reach the rest

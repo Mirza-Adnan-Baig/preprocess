@@ -199,8 +199,27 @@ re-create it from scratch rather than editing in place.
     real testing: asked "how many times does the word X appear," the
     model had nothing to call at all, so it guessed — 26 instead of the
     real (roughly) 381 on a real 41-page document.
+- **Reaches the whole document, however long.** A long document is
+  trimmed before the model reads it — but it now keeps the *beginning
+  and the end* (sender and date at the top, totals and payment terms at
+  the bottom), and `search_text` searches the **complete** text and
+  returns the matching passage with its surroundings. Verified on a
+  105,000-character document: it found a passage at character 105,001,
+  far past what the model can see directly. Every counting and summing
+  tool has always read the complete data.
+- **Answers the awkward questions too**, not just counts and sums:
+  - "Welche Artikel kosten über 10 Euro?" / "Was kosten alle Zuberhole
+    zusammen?" / "Die 5 teuersten Positionen?" (`query_table`)
+  - "Wie viele verschiedene Artikel?" / "Welcher Wert kommt am
+    häufigsten vor?" (`column_stats`)
+  - "Gibt es doppelte EANs?" (`find_duplicates`)
+  - "Fehlt irgendwo ein Barcode?" (`query_table` with `op: empty`)
+  - "Wie viele Seiten hat das PDF?" (`document_info`)
+  - The full list of what people actually ask, and which of those work,
+    is in **`docs/question-coverage.md`** — use it as your test
+    checklist.
 - Says plainly when something isn't in the document, instead of
-  inventing an answer.
+  inventing an answer — and now searches the full text before saying so.
 
 ## What this can't do yet
 
@@ -288,6 +307,19 @@ were actually fixed in this code.
   correctly either way — this is a cosmetic freeze during the wait, not
   a failure.
 
+- A long document used to be cut to its first ~13 pages for the model's
+  own reading, so anything at the end (totals, payment terms, signature)
+  was invisible. The extract now keeps both ends, long tables show their
+  first *and last* rows, and `search_text` reads the complete text.
+- Cosmetic header differences between pages (a line break, double space
+  or different capitalisation when the header re-prints on page 2) used
+  to split one logical table into a pile of fragments, each holding a
+  fraction of the rows — so a count on a 41-page catalogue could report
+  one fragment's rows. Headers are now matched ignoring that noise.
+- Two columns with the same name (two EAN columns, or a repeat after a
+  merge) crashed ingestion outright — the whole file failed, not just
+  one answer. Later repeats now get a numbered suffix.
+
 **Open model-quality gaps — expected to improve with the real production
 model, not fixable by more code:**
 
@@ -322,6 +354,19 @@ model, not fixable by more code:**
   where every line item costs exactly the same amount, there's roughly a
   1-in-25 chance the last line item is mistaken for a totals row (see
   "What this can't do yet" below).
+- **Picking the right tool is now the main limit, not the tools.** The
+  tools are deterministic and correct; what isn't guaranteed is the
+  model choosing the right one and filling it in properly. Measured on
+  the small local test model with "what do all the Zuberhol parts cost
+  together": it chose the right tool but matched the description column
+  with `equals` on a partial value, so nothing matched. The tool now
+  answers that with an explicit correction — *"no match with equals;
+  with contains there would be 12 rows; call again with contains; do not
+  invent a number"* — and computes that row count for it. The 7B model
+  still didn't act on it. Your 27B/35B models should; **this is the
+  single most important thing to verify at work**, and
+  `docs/question-coverage.md` §9 tells you exactly how to read the
+  tool-call trace to check it.
 
 **One operational tip, not a bug:** Open WebUI's own automatic chat-title,
 tag, and follow-up-question generation (Admin Panel → Settings → Interface)

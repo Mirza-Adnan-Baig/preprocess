@@ -72,6 +72,7 @@ class Document:
     text: str = ""
     tables: list[Table] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    page_count: int = 0  # 0 when the format has no pages (CSV, Excel, text)
 
     def total_rows(self) -> int:
         return sum(table.row_count() for table in self.tables)
@@ -201,7 +202,14 @@ def detect_numeric_format(
     if plain_values:
         min_length = min(len(v) for v in plain_values)
         unique_ratio = len(set(plain_values)) / len(plain_values)
-        if min_length >= 8 and unique_ratio >= 0.8:
+        # 12+ digits is EAN-13 / UPC-12 / GTIN-14 / account-number territory
+        # and is never a quantity, however often a value repeats -- a real
+        # catalogue legitimately lists the same EAN on several rows, and
+        # requiring near-uniqueness let exactly that case slip through and
+        # be turned into a float (barcodes then printed as
+        # "4051805300000.0"). Between 8 and 11 digits the reading is less
+        # obvious, so near-uniqueness is still required there.
+        if min_length >= 12 or (min_length >= 8 and unique_ratio >= 0.8):
             # No leading zero this time, but a column of long (8+ digit),
             # near-unique plain numbers is still an identifier (EAN/GTIN,
             # barcode, IBAN-like account number), never a real quantity --
@@ -522,9 +530,22 @@ def build_table(
     body = rows[header_index + 1 :]
 
     names: list[str] = []
+    seen: dict[str, int] = {}
     for position, cell in enumerate(header, start=1):
         text = "" if cell is None else str(cell).strip()
-        names.append(text or f"Spalte {position}")
+        name = text or f"Spalte {position}"
+        # Two columns with the same header is normal in a real export (two
+        # EAN columns, or the same header repeated after a merge). Left
+        # alone, pandas hands back a DataFrame instead of a Series for that
+        # name and ingestion dies with an AttributeError -- the whole file
+        # fails, not just one answer. Later repeats get a numbered suffix;
+        # the first keeps the original name so ordinary references work.
+        if name in seen:
+            seen[name] += 1
+            name = f"{name} ({seen[name]})"
+        else:
+            seen[name] = 1
+        names.append(name)
 
     width = len(names)
     padded = [list(row)[:width] + [None] * max(0, width - len(row)) for row in body]
@@ -692,6 +713,12 @@ NOTE_SCAN_SUSPECTED = (
 _MIN_TEXT_PER_PAGE = 20
 
 
+def _normalise_header_cell(cell: str) -> str:
+    """Collapse the cosmetic differences between the same header re-printed
+    on a later page: line breaks, repeated spaces, capitalisation."""
+    return " ".join(str(cell).split()).casefold()
+
+
 def ingest_pdf(raw: bytes, document_id: str, filename: str) -> Document:
     import fitz  # PyMuPDF
 
@@ -700,16 +727,25 @@ def ingest_pdf(raw: bytes, document_id: str, filename: str) -> Document:
         page_texts: list[str] = []
         groups: dict[tuple, list[list]] = {}
 
+        originals: dict[tuple, list] = {}
         for page in document:
             page_texts.append(page.get_text())
             for found in page.find_tables().tables:
                 rows = found.extract()
                 if len(rows) < 2:
                     continue
-                header = tuple(
+                header = [
                     "" if cell is None else str(cell).strip() for cell in rows[0]
-                )
-                groups.setdefault(header, []).extend(rows[1:])
+                ]
+                # Group by a normalised key, not the raw header. The same
+                # table continued on page 2 of a 41-page catalogue routinely
+                # re-prints its header with a line break, double space or
+                # different capitalisation; keying on the raw text split one
+                # logical table into a pile of near-duplicate ones, each with
+                # a fraction of the rows.
+                key = tuple(_normalise_header_cell(cell) for cell in header)
+                groups.setdefault(key, []).extend(rows[1:])
+                originals.setdefault(key, header)
 
         text = "\n\n".join(page_texts)
         notes: list[str] = []
@@ -718,9 +754,9 @@ def ingest_pdf(raw: bytes, document_id: str, filename: str) -> Document:
 
         tables = []
         ordered = sorted(groups.items(), key=lambda item: -len(item[1]))
-        for index, (header, body) in enumerate(ordered, start=1):
+        for index, (key, body) in enumerate(ordered, start=1):
             table = build_table(
-                [list(header)] + body,
+                [list(originals.get(key, key))] + body,
                 table_id=f"{document_id}:tabelle{index}",
                 label=f"Tabelle {index}",
             )
@@ -734,6 +770,7 @@ def ingest_pdf(raw: bytes, document_id: str, filename: str) -> Document:
             text=text,
             tables=tables,
             notes=notes,
+            page_count=len(document),
         )
     finally:
         document.close()
@@ -1167,6 +1204,112 @@ TOOL_SCHEMAS = [
             },
         }, "required": ["search", "document"]},
     }},
+    {"type": "function", "function": {
+        "name": "search_text",
+        "description": (
+            "Durchsucht den GESAMTEN Dokumenttext nach einem Begriff und gibt "
+            "die Fundstellen mit Textumgebung zurück. WICHTIG: oben im Prompt "
+            "steht bei langen Dokumenten nur der Anfang des Textes -- mit "
+            "diesem Werkzeug kommst du an JEDE Stelle des Dokuments heran, "
+            "auch an Seite 30 von 41. Immer verwenden, wenn im sichtbaren "
+            "Ausschnitt nichts steht oder \"[Text gekürzt]\" erscheint, bevor "
+            "du sagst, etwas stehe nicht im Dokument."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "search": {"type": "string", "description": "Gesuchter Begriff"},
+            "document": {
+                "type": "string",
+                "description": "Dokument-Id, 'alle' (nur neuestes Dokument), oder 'alle_dokumente'",
+            },
+            "max_treffer": {
+                "type": "integer",
+                "description": "Wie viele Fundstellen zurückgegeben werden (Standard 5)",
+            },
+        }, "required": ["search", "document"]},
+    }},
+    {"type": "function", "function": {
+        "name": "query_table",
+        "description": (
+            "Die flexible Tabellenabfrage: filtern, rechnen, sortieren. "
+            "Für alles, was über einfaches Zählen hinausgeht, z. B. \"welche "
+            "Artikel kosten mehr als 10 Euro\", \"was kosten alle Zuberhole "
+            "zusammen\", \"die 5 teuersten Positionen\", \"welcher Artikel hat "
+            "die größte Menge\", \"wie viele Zeilen haben kein Barcode\". "
+            "filters verknüpft mehrere Bedingungen mit UND. Ohne aggregate "
+            "kommen die passenden Zeilen zurück, mit aggregate die berechnete "
+            "Zahl."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "table": {"type": "string", "description": "Tabellen-Id"},
+            "filters": {
+                "type": "array",
+                "description": (
+                    "Liste von Bedingungen, alle müssen zutreffen. Jede: "
+                    "{\"column\": Spaltenname, \"op\": contains|equals|gt|lt|"
+                    "gte|lte|empty|not_empty, \"value\": Wert}"
+                ),
+                "items": {"type": "object", "properties": {
+                    "column": {"type": "string"},
+                    "op": {"type": "string"},
+                    "value": {"type": "string"},
+                }},
+            },
+            "aggregate": {
+                "type": "object",
+                "description": (
+                    "Optional. {\"func\": count|sum|avg|min|max|distinct, "
+                    "\"column\": Spaltenname}. count braucht keine Spalte."
+                ),
+                "properties": {
+                    "func": {"type": "string"},
+                    "column": {"type": "string"},
+                },
+            },
+            "sort_by": {"type": "string", "description": "Optional: nach dieser Spalte sortieren"},
+            "sort_desc": {"type": "boolean", "description": "true = absteigend (größte zuerst)"},
+            "limit": {"type": "integer", "description": "Wie viele Zeilen zurückkommen (Standard 20)"},
+        }, "required": ["table"]},
+    }},
+    {"type": "function", "function": {
+        "name": "column_stats",
+        "description": (
+            "Überblick über eine Spalte: Anzahl Werte, wie viele verschiedene, "
+            "wie viele leer, die häufigsten Werte, und bei Zahlenspalten "
+            "Summe/Min/Max/Durchschnitt. Gut für \"wie viele verschiedene "
+            "Artikel gibt es\", \"fehlen Werte\", \"welcher Wert kommt am "
+            "häufigsten vor\"."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "table": {"type": "string"}, "column": {"type": "string"},
+        }, "required": ["table", "column"]},
+    }},
+    {"type": "function", "function": {
+        "name": "find_duplicates",
+        "description": (
+            "Findet Werte, die in einer Spalte mehrfach vorkommen -- z. B. "
+            "doppelte EAN-Codes oder doppelt erfasste Artikelnummern in einer "
+            "Preisliste."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "table": {"type": "string"}, "column": {"type": "string"},
+            "limit": {"type": "integer", "description": "Wie viele Duplikate aufgelistet werden (Standard 20)"},
+        }, "required": ["table", "column"]},
+    }},
+    {"type": "function", "function": {
+        "name": "document_info",
+        "description": (
+            "Aufbau eines Dokuments: Dateiname, Dateityp, Seitenzahl bei PDF, "
+            "Länge des Textes, und jede erkannte Tabelle mit Spalten und "
+            "Zeilenzahl. Für \"wie viele Seiten hat das Dokument\" oder "
+            "\"was ist das überhaupt für eine Datei\"."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "document": {
+                "type": "string",
+                "description": "Dokument-Id, 'alle' (nur neuestes Dokument), oder 'alle_dokumente'",
+            },
+        }, "required": ["document"]},
+    }},
 ]
 
 SYSTEM_PROMPT = (
@@ -1214,9 +1357,23 @@ SYSTEM_PROMPT = (
     "IMMER get_row oder find_rows aufrufen -- auch wenn die Zeile oben in der "
     "Tabelle bereits sichtbar ist. Nie behaupten, ein Wert sei nicht "
     "verfügbar, ohne das Werkzeug versucht zu haben.\n"
-    "7. Steht die Antwort nicht im Dokument, sage genau das (in der Sprache "
-    "der Frage, z. B. „Das steht nicht im Dokument.“ auf Deutsch oder "
-    "„That is not in the document.“ auf Englisch). Nichts erfinden.\n"
+    "6b. Der oben sichtbare Dokumenttext ist bei langen Dokumenten gekürzt "
+    "(erkennbar an „[… Zeichen aus der Mitte ausgelassen …]“ oder „[… weitere "
+    "Zeilen nicht angezeigt …]“). Der VOLLSTÄNDIGE Text ist trotzdem "
+    "erreichbar: search_text durchsucht ihn ganz und liefert die Fundstelle "
+    "mit Umgebung. Bevor du sagst, etwas stehe nicht im Dokument, IMMER "
+    "zuerst search_text mit einem passenden Stichwort versuchen.\n"
+    "6c. Für alles, was über einfaches Zählen hinausgeht, query_table "
+    "verwenden: Filter nach Zahl (\"teurer als 10 Euro\"), gefilterte Summen "
+    "(\"was kosten alle X zusammen\"), Sortieren und Top-N (\"die 5 teuersten "
+    "Positionen\", \"größte Menge\"), leere Felder (op=empty). column_stats "
+    "für \"wie viele verschiedene\", \"welcher Wert kommt am häufigsten vor\", "
+    "\"fehlen Werte\". find_duplicates für doppelte EANs oder "
+    "Artikelnummern. document_info für Seitenzahl und Aufbau der Datei.\n"
+    "7. Steht die Antwort nach einer ehrlichen Suche wirklich nicht im "
+    "Dokument, sage genau das (in der Sprache der Frage, z. B. „Das steht "
+    "nicht im Dokument.“ auf Deutsch oder „That is not in the document.“ auf "
+    "Englisch). Nichts erfinden.\n"
     "8. Antworte in der Sprache, in der die Frage gestellt wurde -- Deutsch "
     "bei einer deutschen Frage, Englisch bei einer englischen Frage, "
     "ebenso in jeder anderen Sprache. Nicht die Sprache des Dokuments "
@@ -1247,6 +1404,113 @@ def _all_tables(documents: list[Document]) -> dict:
     return {table.id: table for document in documents for table in document.tables}
 
 
+def _resolve_documents(documents: list[Document], document_arg) -> list[Document]:
+    """Turn a document argument into the documents it refers to.
+
+    Mirrors count_rows's 'alle' semantics: Open WebUI hands back every file
+    ever attached in a chat on every turn, so a plain question defaults to
+    the most recently attached document only, and 'alle_dokumente' is the
+    explicit opt-in to every one of them.
+    """
+    if document_arg == "alle_dokumente":
+        return list(documents)
+    if not document_arg or document_arg == "alle":
+        return documents[-1:] if documents else []
+    matches = [d for d in documents if d.id == document_arg]
+    if not matches:
+        raise ValueError(
+            f"Unbekanntes Dokument „{document_arg}“. Gültige Dokumente: "
+            f"{[d.id for d in documents]}"
+        )
+    return matches
+
+
+def _numeric_series(table, column: str) -> pd.Series:
+    """A column as real numbers, using the format already decided for it."""
+    info = table.columns.get(column)
+    if info is not None and info.numeric_style in {"german", "english", "integer"}:
+        return to_numeric_series(table.frame[column], info.numeric_style)
+    # Column was kept as text (an identifier, or mixed content). Comparing it
+    # numerically is still allowed where the values happen to parse, but a
+    # column with nothing numeric in it must say so rather than compare
+    # everything against NaN and silently return zero matches.
+    coerced = pd.to_numeric(table.frame[column], errors="coerce")
+    if len(table.frame) and coerced.notna().sum() == 0:
+        raise ValueError(
+            f"Spalte „{column}“ enthält keine Zahlen -- ein Zahlenvergleich "
+            f"ist hier nicht möglich. Für Text „contains“ oder „equals“ verwenden."
+        )
+    return coerced
+
+
+def _check_column(table, column: str) -> str:
+    """Validate a column name, naming the real ones when it's wrong."""
+    if column not in table.frame.columns:
+        raise ValueError(
+            f"Spalte „{column}“ gibt es nicht. Vorhanden: {list(table.frame.columns)}"
+        )
+    return column
+
+
+def _parse_threshold(value):
+    """Read a comparison value written in either convention.
+
+    The question can come from either side: a German user types 10,5 and a
+    model writing English types 10.5. Trying German first read "10.5" as
+    ten-thousand-five (dot as a thousands separator), so a "price over
+    10.5" filter silently matched nothing and the model then invented an
+    answer -- confirmed live. The separator present decides the reading.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip()
+    if "," in text and "." in text:
+        # Both present, so one groups and one decimates: the one appearing
+        # last is the decimal separator (1.234,56 German / 1,234.56 English).
+        return parse_number(
+            text, "german" if text.rfind(",") > text.rfind(".") else "english"
+        )
+    if "," in text:
+        return parse_number(text, "german")
+    if "." in text:
+        # A lone dot in a threshold someone typed is a decimal point far more
+        # often than a German thousands separator ("price over 10.5"), so it
+        # is read that way; "1.234" meaning 1234 is the accepted edge case.
+        return parse_number(text, "english")
+    return parse_number(text, "integer")
+
+
+def _display(value) -> str:
+    """Render a cell value the way it should be read back.
+
+    A whole number living in a float column stringifies as "10000.0",
+    which looks like a different value from the 10000 printed in the
+    document -- misleading in a duplicate list or a most-common-values
+    list, where the point is to quote the value exactly.
+    """
+    if isinstance(value, float) and not isinstance(value, bool):
+        if pd.isna(value):
+            return ""
+        if float(value).is_integer():
+            return str(int(value))
+    return str(value)
+
+
+def _column_examples(frame, column: str, count: int = 3) -> list[str]:
+    values = frame[column].astype(str).str.strip()
+    return [v for v in values[values.ne("")].unique()[:count]]
+
+
+def _positive_int(value, default: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(number, maximum))
+
+
 def _require(args: dict, key: str, tool: str):
     """Read a required tool argument, or raise an error the model can act
     on. A bare args[key] KeyError's own text is just "'column'" -- useless
@@ -1266,27 +1530,63 @@ def _require(args: dict, key: str, tool: str):
 
 def run_tool(name: str, args: dict, documents: list[Document]):
     if name == "count_text_occurrences":
-        search = args.get("search") or ""
-        if not search:
-            raise ValueError("Kein Suchbegriff angegeben.")
-        needle = search.lower()
-        document_arg = args.get("document")
-        if document_arg == "alle_dokumente":
-            return sum(document.text.lower().count(needle) for document in documents)
-        if not document_arg or document_arg == "alle":
-            # Same reasoning as count_rows's 'alle': Open WebUI hands back
-            # every file ever attached in a chat on every turn, so a plain
-            # "how many times does X appear" question must not silently
-            # fold in an older, no-longer-relevant document.
-            newest = documents[-1] if documents else None
-            return newest.text.lower().count(needle) if newest else 0
-        matches = [d for d in documents if d.id == document_arg]
-        if not matches:
-            raise ValueError(
-                f"Unbekanntes Dokument „{document_arg}“. Gültige Dokumente: "
-                f"{[d.id for d in documents]}"
-            )
-        return matches[0].text.lower().count(needle)
+        needle = str(_require(args, "search", name)).lower()
+        scope = _resolve_documents(documents, args.get("document"))
+        return sum(document.text.lower().count(needle) for document in scope)
+
+    if name == "search_text":
+        needle = str(_require(args, "search", name)).lower()
+        scope = _resolve_documents(documents, args.get("document"))
+        try:
+            max_hits = int(args.get("max_treffer") or 5)
+        except (TypeError, ValueError):
+            max_hits = 5
+        max_hits = max(1, min(max_hits, 20))
+
+        hits: list[dict] = []
+        total = 0
+        for document in scope:
+            text = document.text or ""
+            lowered = text.lower()
+            start = 0
+            while True:
+                position = lowered.find(needle, start)
+                if position < 0:
+                    break
+                total += 1
+                if len(hits) < max_hits:
+                    left = max(0, position - 120)
+                    right = min(len(text), position + len(needle) + 120)
+                    snippet = " ".join(text[left:right].split())
+                    hits.append({
+                        "dokument": document.id,
+                        "zeichen_position": position,
+                        "auszug": ("…" if left > 0 else "") + snippet
+                        + ("…" if right < len(text) else ""),
+                    })
+                start = position + len(needle)
+        return {"treffer_gesamt": total, "stellen": hits}
+
+    if name == "document_info":
+        scope = _resolve_documents(documents, args.get("document"))
+        return {
+            document.id: {
+                "dateiname": document.filename,
+                "dateityp": document.media_type,
+                "seiten": document.page_count or "keine Seiten (kein PDF)",
+                "textlaenge_zeichen": len(document.text or ""),
+                "tabellen": {
+                    table.id: {
+                        "bezeichnung": table.label,
+                        "zeilen": table.row_count(),
+                        "spalten": [str(c) for c in table.frame.columns],
+                    }
+                    for table in document.tables
+                },
+                "hinweise": list(document.notes),
+            }
+            for document in scope
+        }
 
     if name == "list_documents":
         return {
@@ -1334,15 +1634,24 @@ def run_tool(name: str, args: dict, documents: list[Document]):
         return table.row_count()
 
     if name == "sum_column":
-        column = _require(args, "column", name)
-        if column not in table.frame.columns:
-            raise ValueError(
-                f"Spalte „{column}“ gibt es nicht. Vorhanden: {list(table.frame.columns)}"
-            )
-        numeric = pd.to_numeric(table.frame[column], errors="coerce")
-        if len(table.frame) and numeric.notna().sum() == 0:
-            raise ValueError(f"Spalte „{column}“ enthält keine Zahlen zum Summieren.")
-        return float(numeric.sum())
+        column = _check_column(table, _require(args, "column", name))
+        numeric = _numeric_series(table, column)
+        # Say what was summed, not just the number. Confirmed live: asked
+        # what one group of parts costs, a model called this tool with no
+        # filter and reported the whole table's total as that group's total
+        # (660 instead of 108). The number wasn't invented -- its scope was
+        # mislabelled -- so the scope now travels with the number.
+        return {
+            "spalte": column,
+            "summe": float(numeric.sum()),
+            "zeilen_einbezogen": int(table.row_count()),
+            "hinweis": (
+                f"Summe über ALLE {table.row_count()} Zeilen der Tabelle, ohne "
+                "Filter. Wenn nur bestimmte Zeilen gemeint sind (z. B. nur ein "
+                "Artikeltyp), stattdessen query_table mit filters verwenden -- "
+                "diese Zahl wäre sonst falsch beschriftet."
+            ),
+        }
 
     if name == "get_row":
         return table.frame.iloc[int(_require(args, "index", name))].to_dict()
@@ -1353,22 +1662,293 @@ def run_tool(name: str, args: dict, documents: list[Document]):
             raise ValueError(
                 f"Spalte „{column}“ gibt es nicht. Vorhanden: {list(table.frame.columns)}"
             )
-        needle = str(_require(args, "contains", name)).lower()
+        if "contains" not in args:
+            _require(args, "contains", name)  # raises, naming the missing field
+        needle = str(args.get("contains") or "").lower().strip()
+        # Searching for the *text* "nan"/"leer" is an attempt to find empty
+        # cells, and it silently finds nothing: an empty cell is missing
+        # data, not the word "nan" (pandas keeps it missing through
+        # astype(str), so the match fails). Confirmed live: a model asked
+        # "how many rows have no barcode", searched for "nan", got 0, and
+        # concluded every row had one -- while two genuinely did not.
+        if needle in {"nan", "none", "null", "leer", "empty", ""}:
+            raise ValueError(
+                "Leere Felder lassen sich so nicht finden. Dafür query_table "
+                f"verwenden: filters=[{{\"column\": \"{column}\", \"op\": \"empty\"}}] "
+                "(oder \"not_empty\" für gefüllte Felder)."
+            )
         mask = table.frame[column].astype(str).str.lower().str.contains(needle, na=False)
         if name == "count_matching_rows":
             return int(mask.sum())
         return table.frame[mask].head(50).to_dict(orient="records")
 
+    if name == "column_stats":
+        column = _check_column(table, _require(args, "column", name))
+        values = table.frame[column]
+        filled = values[values.astype(str).str.strip().ne("") & values.notna()]
+        stats = {
+            "zeilen_gesamt": int(len(values)),
+            "gefuellt": int(len(filled)),
+            "leer": int(len(values) - len(filled)),
+            "verschiedene_werte": int(filled.nunique()),
+            "haeufigste_werte": [
+                {"wert": _display(value), "anzahl": int(count)}
+                for value, count in filled.value_counts().head(5).items()
+            ],
+        }
+        info = table.columns.get(column)
+        if info is not None and info.numeric_style in {"german", "english", "integer"}:
+            numbers = to_numeric_series(values, info.numeric_style).dropna()
+            if len(numbers):
+                stats["zahlen"] = {
+                    "summe": float(numbers.sum()),
+                    "min": float(numbers.min()),
+                    "max": float(numbers.max()),
+                    "durchschnitt": float(numbers.mean()),
+                }
+        else:
+            stats["hinweis"] = (
+                "Textspalte (z. B. Bezeichnung oder eine Kennnummer wie EAN) -- "
+                "bewusst nicht als Zahl behandelt, deshalb keine Summe."
+            )
+        return stats
+
+    if name == "find_duplicates":
+        column = _check_column(table, _require(args, "column", name))
+        limit = _positive_int(args.get("limit"), default=20, maximum=100)
+        values = table.frame[column].map(_display).str.strip()
+        filled = values[values.ne("")]
+        counts = filled.value_counts()
+        duplicated = counts[counts > 1]
+        return {
+            "spalte": column,
+            "werte_mit_mehrfachvorkommen": int(len(duplicated)),
+            "betroffene_zeilen_gesamt": int(duplicated.sum()),
+            "beispiele": [
+                {"wert": _display(value), "anzahl": int(count)}
+                for value, count in duplicated.head(limit).items()
+            ],
+        }
+
+    if name == "query_table":
+        frame = table.frame
+        mask = pd.Series(True, index=frame.index)
+        applied: list[str] = []
+        for condition in args.get("filters") or []:
+            if not isinstance(condition, dict):
+                continue
+            column = _check_column(table, _require(condition, "column", name))
+            operator = str(condition.get("op") or "contains").lower()
+            raw_value = condition.get("value")
+            column_values = frame[column]
+
+            if operator in {"empty", "not_empty"}:
+                is_empty = column_values.isna() | column_values.astype(str).str.strip().eq("")
+                condition_mask = is_empty if operator == "empty" else ~is_empty
+            elif operator in {"contains", "equals"}:
+                text = str("" if raw_value is None else raw_value).lower()
+                as_text = column_values.astype(str).str.lower().str.strip()
+                condition_mask = (
+                    as_text.str.contains(text, na=False, regex=False)
+                    if operator == "contains"
+                    else as_text.eq(text)
+                )
+            elif operator in {"gt", "lt", "gte", "lte"}:
+                numbers = _numeric_series(table, column)
+                threshold = _parse_threshold(raw_value)
+                if threshold is None:
+                    raise ValueError(
+                        f"„{raw_value}“ ist keine Zahl, mit der sich vergleichen lässt."
+                    )
+                comparison = {
+                    "gt": numbers > threshold,
+                    "lt": numbers < threshold,
+                    "gte": numbers >= threshold,
+                    "lte": numbers <= threshold,
+                }[operator]
+                condition_mask = comparison.fillna(False)
+            else:
+                raise ValueError(
+                    f"Unbekannter Operator „{operator}“. Möglich: contains, "
+                    "equals, gt, lt, gte, lte, empty, not_empty."
+                )
+            mask &= condition_mask
+            applied.append(
+                f"{column} {operator}"
+                if operator in {"empty", "not_empty"}
+                else f"{column} {operator} {raw_value}"
+            )
+
+        selected = frame[mask]
+
+        # A filter that matches nothing is the most common way one of these
+        # calls goes wrong -- usually op=equals against a descriptive column
+        # where only part of the text was given ("Zuberhol" vs "Zuberhol Akku
+        # Typ 3"). Confirmed live: the old error blamed the column for having
+        # no numbers, which is not what went wrong, and the model gave up and
+        # invented a total instead of retrying. Say what actually happened and
+        # show real values from the column so the next call can be corrected.
+        if applied and not len(selected):
+            # Work out whether a partial match would have found something and
+            # say so concretely -- "op='contains' would return 12 rows" is a
+            # far stronger correction than advice, and it costs one pass over
+            # the column to compute.
+            retry_counts = {}
+            for condition in args.get("filters") or []:
+                if not isinstance(condition, dict):
+                    continue
+                target = condition.get("column")
+                if target not in frame.columns or condition.get("value") in (None, ""):
+                    continue
+                if str(condition.get("op") or "").lower() != "equals":
+                    continue
+                would_match = int(
+                    frame[target].astype(str).str.lower()
+                    .str.contains(str(condition["value"]).lower(), na=False, regex=False)
+                    .sum()
+                )
+                if would_match:
+                    retry_counts[target] = would_match
+
+            hinweis = (
+                "Kein Treffer. KEINE Zahl erfinden -- den Aufruf korrigieren "
+                "und erneut aufrufen."
+            )
+            if retry_counts:
+                spalten = ", ".join(
+                    f"„{column}“ ({count} Zeilen)" for column, count in retry_counts.items()
+                )
+                hinweis = (
+                    f"Kein Treffer mit op='equals'. Mit op='contains' gäbe es "
+                    f"Treffer in {spalten}. Rufe query_table JETZT erneut auf, "
+                    f"mit op='contains' statt 'equals'. KEINE Zahl erfinden."
+                )
+            return {
+                "treffer_gesamt": 0,
+                "filter": applied,
+                "hinweis": hinweis,
+                "beispielwerte": {
+                    condition["column"]: _column_examples(frame, condition["column"])
+                    for condition in (args.get("filters") or [])
+                    if isinstance(condition, dict)
+                    and condition.get("column") in frame.columns
+                },
+            }
+
+        aggregate = args.get("aggregate")
+        if isinstance(aggregate, dict) and aggregate.get("func"):
+            function = str(aggregate["func"]).lower()
+            if function == "count":
+                return {"filter": applied, "anzahl": int(len(selected))}
+            column = _check_column(table, _require(aggregate, "column", name))
+            if function == "distinct":
+                return {
+                    "filter": applied,
+                    "verschiedene_werte": int(selected[column].astype(str).nunique()),
+                }
+            numbers = _numeric_series(table, column)[mask].dropna()
+            if not len(numbers):
+                raise ValueError(
+                    f"In Spalte „{column}“ stehen bei den gefilterten Zeilen "
+                    f"keine auswertbaren Zahlen. Beispielwerte: "
+                    f"{_column_examples(frame, column)}"
+                )
+            result = {
+                "sum": float(numbers.sum()),
+                "avg": float(numbers.mean()),
+                "min": float(numbers.min()),
+                "max": float(numbers.max()),
+            }.get(function)
+            if result is None:
+                raise ValueError(
+                    f"Unbekannte Funktion „{function}“. Möglich: count, sum, "
+                    "avg, min, max, distinct."
+                )
+            payload = {"filter": applied, "spalte": column, function: result}
+            if not applied:
+                # Same trap as sum_column: an aggregate with no filter is the
+                # whole table, and a model asked about one group of parts has
+                # been seen reporting that as the group's figure.
+                payload["zeilen_einbezogen"] = int(len(frame))
+                payload["hinweis"] = (
+                    f"Ohne Filter gerechnet, also über ALLE {len(frame)} Zeilen. "
+                    "Wenn nach einer bestimmten Gruppe gefragt wurde (z. B. ein "
+                    "Artikeltyp), erneut aufrufen mit filters, sonst ist diese "
+                    "Zahl falsch beschriftet."
+                )
+            return payload
+
+        sort_by = args.get("sort_by")
+        if sort_by:
+            sort_column = _check_column(table, sort_by)
+            info = table.columns.get(sort_column)
+            descending = bool(args.get("sort_desc"))
+            if info is not None and info.numeric_style in {"german", "english", "integer"}:
+                order = to_numeric_series(selected[sort_column], info.numeric_style)
+                selected = selected.loc[
+                    order.sort_values(ascending=not descending, na_position="last").index
+                ]
+            else:
+                selected = selected.sort_values(sort_column, ascending=not descending)
+
+        limit = _positive_int(args.get("limit"), default=20, maximum=100)
+        return {
+            "filter": applied,
+            "treffer_gesamt": int(len(selected)),
+            "zeilen": selected.head(limit).to_dict(orient="records"),
+        }
+
     raise ValueError(f"Unbekanntes Werkzeug: {name}")
+
+
+def _trim_text(text: str, max_text_chars: int) -> str:
+    """Keep the beginning AND the end of a long document, not just the start.
+
+    A 41-page invoice or catalogue puts the sender, date and document
+    numbers at the very beginning and the totals, tax lines, payment terms
+    and signatures at the very end -- head-only truncation threw the entire
+    second half away, so "what's the total?" on a long document was
+    unanswerable from the text even though it's one of the most likely
+    questions. The middle is where the repetitive line items live, and
+    those are reachable through the table tools and search_text anyway.
+    """
+    if len(text) <= max_text_chars:
+        return text
+    head_chars = int(max_text_chars * 0.7)
+    tail_chars = max_text_chars - head_chars
+    omitted = len(text) - max_text_chars
+    return (
+        text[:head_chars]
+        + f"\n\n…[{omitted} Zeichen aus der Mitte ausgelassen — mit search_text "
+        "ist der vollständige Text durchsuchbar]…\n\n"
+        + text[-tail_chars:]
+    )
+
+
+def _table_markdown(frame, max_rows: int = 200) -> str:
+    """Table preview keeping the first and last rows of a long table.
+
+    Same reasoning as _trim_text: a totals or summary row sits at the
+    bottom, and head-only preview hid it on any table longer than the cap.
+    """
+    if len(frame) <= max_rows:
+        return frame.to_markdown(index=False)
+    head_rows = int(max_rows * 0.7)
+    tail_rows = max_rows - head_rows
+    omitted = len(frame) - max_rows
+    return (
+        frame.head(head_rows).to_markdown(index=False)
+        + f"\n\n…[{omitted} weitere Zeilen nicht angezeigt — Zählen, Summieren "
+        "und Suchen laufen über die Werkzeuge immer über ALLE Zeilen]…\n\n"
+        + frame.tail(tail_rows).to_markdown(index=False)
+    )
 
 
 def build_context(documents: list[Document], max_text_chars: int = 40000) -> str:
     """Document text, table markdown, and code-computed facts."""
     parts = []
     for index, document in enumerate(documents):
-        text = document.text or ""
-        if len(text) > max_text_chars:
-            text = text[:max_text_chars] + "\n…[Text gekürzt]"
+        text = _trim_text(document.text or "", max_text_chars)
         marker = (
             " (zuletzt angehängt)" if len(documents) > 1 and index == len(documents) - 1 else ""
         )
@@ -1376,8 +1956,9 @@ def build_context(documents: list[Document], max_text_chars: int = 40000) -> str
         for table in document.tables:
             parts.append(
                 f"### {table.id} — {table.label} "
-                f"(Spalten: {', '.join(str(c) for c in table.frame.columns)})\n"
-                + table.frame.head(200).to_markdown(index=False)
+                f"(Spalten: {', '.join(str(c) for c in table.frame.columns)}, "
+                f"Zeilen: {table.row_count()})\n"
+                + _table_markdown(table.frame)
             )
     parts.append(
         "FAKTEN: " + json.dumps(compute_facts(documents), ensure_ascii=False, default=str)
