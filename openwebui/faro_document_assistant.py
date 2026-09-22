@@ -1386,6 +1386,53 @@ SYSTEM_PROMPT = (
     "beantwortet werden konnte."
 )
 
+# Repeated directly after the question, not only in the system prompt.
+# On a long document the rules sit thousands of tokens away by the time
+# the model reaches the question, and a smaller model simply stops acting
+# on them -- measured on a 50-page catalogue, it counted "Zuberhol" by eye
+# and said 12 where the real answer was 554, without calling any tool at
+# all, while the same model used tools correctly on a short document.
+# The last thing before generation gets the most attention, so the one
+# rule that matters most is restated there.
+_REMINDER = (
+    "ERINNERUNG: Zähle, summiere und suche NIE selbst im obigen Text oder "
+    "in der Tabelle -- der Ausschnitt oben ist bei langen Dokumenten "
+    "unvollständig, eigenes Zählen ist dort immer falsch. Rufe ein "
+    "Werkzeug auf: count_matching_rows oder query_table für Zeilen einer "
+    "Tabelle, count_text_occurrences oder search_text für den Fließtext, "
+    "document_info für Seitenzahl und Aufbau. Erst danach antworten."
+)
+
+_TOOL_REQUIRED = (
+    "STOP. Du hast kein Werkzeug aufgerufen, sondern selbst gezählt oder "
+    "geschätzt. Das ist bei dieser Frage immer falsch, weil der oben "
+    "sichtbare Ausschnitt unvollständig ist. Rufe JETZT genau ein Werkzeug "
+    "richtig auf (nicht als Text beschreiben, sondern wirklich aufrufen) "
+    "und antworte erst mit dessen Ergebnis. Wenn wirklich kein Werkzeug "
+    "passt, sage klar, dass du es nicht sicher beantworten kannst -- nenne "
+    "keine selbst gezählte Zahl."
+)
+
+# Question wordings that can only be answered correctly by a tool. Kept
+# deliberately broad: the cost of a false positive is one short answer
+# being held back for a moment, the cost of a false negative is a
+# confidently wrong number.
+_QUANTITATIVE_HINTS = (
+    "wie viele", "wieviele", "wie oft", "anzahl", "summe", "gesamt",
+    "durchschnitt", "teuerst", "billigst", "größte", "groesste", "kleinste",
+    "höchste", "hoechste", "niedrigste", "doppelt", "duplikat", "fehlen",
+    "fehlt", "leer", "seiten", "how many", "how much", "how often", "count",
+    "total", "sum of", "average", "most expensive", "cheapest", "highest",
+    "lowest", "duplicate", "missing", "empty", "pages",
+)
+
+
+def needs_a_tool(question: str) -> bool:
+    """Whether this question can only be answered correctly by a tool."""
+    lowered = (question or "").lower()
+    return any(hint in lowered for hint in _QUANTITATIVE_HINTS)
+
+
 _FORCE_ENGLISH = (
     "\n\nOVERRIDE (takes precedence over every rule above, including rule 8): "
     "you must answer only in English, in every single reply, no matter what "
@@ -1925,12 +1972,18 @@ def _trim_text(text: str, max_text_chars: int) -> str:
     )
 
 
-def _table_markdown(frame, max_rows: int = 200) -> str:
+def _table_markdown(frame, max_rows: int = 200, max_chars: int | None = None) -> str:
     """Table preview keeping the first and last rows of a long table.
 
     Same reasoning as _trim_text: a totals or summary row sits at the
     bottom, and head-only preview hid it on any table longer than the cap.
     """
+    if max_chars and len(frame):
+        # Work out how many rows actually fit in the space this table has
+        # been given, from the real width of its own rows.
+        sample = frame.head(min(len(frame), 20)).to_markdown(index=False)
+        per_row = max(1, len(sample) // max(1, min(len(frame), 20)))
+        max_rows = max(4, min(max_rows, max_chars // per_row))
     if len(frame) <= max_rows:
         return frame.to_markdown(index=False)
     head_rows = int(max_rows * 0.7)
@@ -1944,8 +1997,43 @@ def _table_markdown(frame, max_rows: int = 200) -> str:
     )
 
 
-def build_context(documents: list[Document], max_text_chars: int = 40000) -> str:
+def context_budget(num_ctx: int) -> int:
+    """How many characters of context may be built for a given window.
+
+    Ollama does not refuse an over-long prompt -- it silently drops the
+    *oldest* tokens to make it fit, and the oldest thing in this
+    conversation is the system prompt. So overflowing the window doesn't
+    truncate some harmless tail, it deletes the rules that say don't
+    guess and use the tools, which is exactly when the model starts
+    inventing answers. Measured on a real 50-page catalogue: the context
+    came to roughly 20,000 tokens against a 16,384 window.
+
+    Roughly 3.5 characters per token for German/English mixed text, and
+    only part of the window is spent on the document -- the rest has to
+    hold the system prompt, the question, the tool calls and results, and
+    the answer being generated.
+    """
+    return max(4000, int(num_ctx * 3.5 * 0.55))
+
+
+def build_context(
+    documents: list[Document],
+    max_text_chars: int = 40000,
+    max_total_chars: int | None = None,
+) -> str:
     """Document text, table markdown, and code-computed facts."""
+    per_table_chars: int | None = None
+    if max_total_chars:
+        facts_size = len(json.dumps(compute_facts(documents), ensure_ascii=False, default=str))
+        available = max(2000, max_total_chars - facts_size)
+        text_share = int(available * 0.45)
+        table_share = available - text_share
+        max_text_chars = min(
+            max_text_chars, max(500, text_share // max(1, len(documents)))
+        )
+        table_count = sum(len(document.tables) for document in documents)
+        per_table_chars = max(500, table_share // max(1, table_count))
+
     parts = []
     for index, document in enumerate(documents):
         text = _trim_text(document.text or "", max_text_chars)
@@ -1958,7 +2046,7 @@ def build_context(documents: list[Document], max_text_chars: int = 40000) -> str
                 f"### {table.id} — {table.label} "
                 f"(Spalten: {', '.join(str(c) for c in table.frame.columns)}, "
                 f"Zeilen: {table.row_count()})\n"
-                + _table_markdown(table.frame)
+                + _table_markdown(table.frame, max_chars=per_table_chars)
             )
     parts.append(
         "FAKTEN: " + json.dumps(compute_facts(documents), ensure_ascii=False, default=str)
@@ -2055,10 +2143,19 @@ def answer(
     import ollama
 
     client = ollama.Client(host=host)
-    context = build_context(documents, max_text_chars=max_text_chars)
+    context = build_context(
+        documents,
+        max_text_chars=max_text_chars,
+        max_total_chars=context_budget(num_ctx),
+    )
     messages = [
         {"role": "system", "content": _system_prompt_for(response_language)},
-        {"role": "user", "content": f"DOKUMENTE:\n{context}\n\nFRAGE: {question}"},
+        {
+            "role": "user",
+            "content": (
+                f"DOKUMENTE:\n{context}\n\nFRAGE: {question}\n\n" + _REMINDER
+            ),
+        },
     ]
     # Not gated on _all_tables(documents): count_text_occurrences works on a
     # document's free text and needs no table at all -- a pure-text upload
@@ -2066,12 +2163,22 @@ def answer(
     # to the model's own unreliable reading-based counting.
     tools = TOOL_SCHEMAS if documents else None
     used_tool_names: set[str] = set()
+    # A counting question answered without a single tool call is always
+    # the model reading the visible extract by eye, which on a long
+    # document is wrong by construction. Its text is held back for those
+    # questions until it's clear no correction is needed -- otherwise the
+    # wrong number would already be on screen before it gets fixed.
+    quantitative = needs_a_tool(question)
+    nudged = False
+    # Once per answer, not once per round -- a corrective round would
+    # otherwise print the same "preparing" notice a second time.
+    heartbeat_shown = False
 
     for _ in range(max_rounds):
         content = ""
         tool_calls = None
         seen_output = False
-        heartbeat_shown = False
+        withhold = quantitative and not used_tool_names and not nudged
         try:
             for item in _stream_with_heartbeat(
                 client, model, messages, tools,
@@ -2092,7 +2199,8 @@ def answer(
                 piece = item.get("message", {}).get("content", "")
                 if piece:
                     content += piece
-                    yield piece
+                    if not withhold:
+                        yield piece
                 if item.get("message", {}).get("tool_calls"):
                     tool_calls = item["message"]["tool_calls"]
         except Exception as error:
@@ -2107,6 +2215,17 @@ def answer(
             {"role": "assistant", "content": content, "tool_calls": tool_calls}
         )
         if not tool_calls:
+            if withhold and not used_tool_names:
+                # It answered a counting question without calling anything.
+                # Measured on a 50-page catalogue: it counted by eye and
+                # said 12, then 28, where the real answer was 554 -- and in
+                # one run it even wrote the tool call out as prose and
+                # invented its result. Ask once, pointedly, for a real call.
+                nudged = True
+                messages.append({"role": "user", "content": _TOOL_REQUIRED})
+                continue
+            if withhold:
+                yield content  # held back until it was clear no fix was needed
             sources = set()
             if used_tool_names & {"count_text_occurrences"}:
                 sources.add("textsuche")

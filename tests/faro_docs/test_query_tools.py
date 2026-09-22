@@ -304,3 +304,56 @@ class TestIdentifierAndDisplayHandling:
             "aggregate": {"func": "count"},
         }, self._catalogue_with_repeated_barcodes())
         assert result["anzahl"] == 1
+
+
+class TestContextBudget:
+    """Ollama does not refuse an over-long prompt -- it silently drops the
+    OLDEST tokens, and the oldest thing here is the system prompt. So
+    overflowing the window deletes the rules that say don't guess and use
+    the tools, which is exactly when a model starts inventing answers.
+    Measured on a generated 50-page catalogue: ~20,000 tokens of context
+    against a 16,384 window."""
+
+    def _big_document(self):
+        frame = pd.DataFrame({
+            "Artikelnr": [str(33000 + i) for i in range(1800)],
+            "Bezeichnung": [f"Akku für Apple iPhone {7 + i % 9} Variante {i}" for i in range(1800)],
+            "EAN": [str(4051805300000 + i) for i in range(1800)],
+            "Einzelpreis": [f"{(i % 60) + 1},{i % 100:02d}" for i in range(1800)],
+        })
+        return [Document(
+            id="dok1", filename="katalog.pdf", media_type="application/pdf",
+            text="faro IMPORT EXPORT GmbH\n" + ("Artikelzeile Fülltext. " * 6000)
+                 + "\nGesamtbetrag am Ende 54.942,46 EUR",
+            page_count=50,
+            tables=[Table(id="dok1:t1", label="Tabelle 1", frame=frame)],
+        )]
+
+    @pytest.mark.parametrize("num_ctx", [8192, 16384, 32768])
+    def test_context_fits_the_window_it_was_given(self, num_ctx):
+        from src.faro_docs.answer import SYSTEM_PROMPT, context_budget
+
+        context = build_context(
+            self._big_document(), max_text_chars=40000,
+            max_total_chars=context_budget(num_ctx),
+        )
+        rough_tokens = (len(context) + len(SYSTEM_PROMPT)) / 3.5
+        assert rough_tokens < num_ctx * 0.95
+
+    def test_shrinking_still_keeps_the_table_and_the_documents_end(self):
+        from src.faro_docs.answer import context_budget
+
+        context = build_context(
+            self._big_document(), max_text_chars=40000,
+            max_total_chars=context_budget(8192),
+        )
+        assert "Bezeichnung" in context, "the table must still be described"
+        assert "Gesamtbetrag am Ende" in context, "the end of the document must survive"
+        assert "zeilen_gesamt" in context, "FAKTEN must survive"
+
+    def test_a_bigger_window_really_does_show_more(self):
+        from src.faro_docs.answer import context_budget
+
+        small = build_context(self._big_document(), max_total_chars=context_budget(8192))
+        large = build_context(self._big_document(), max_total_chars=context_budget(32768))
+        assert len(large) > len(small)

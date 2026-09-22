@@ -214,3 +214,58 @@ def test_response_language_en_uses_english_notice(monkeypatch):
 
     assert text.count(DENKT_NACH_EN) == 1
     assert DENKT_NACH not in text
+
+
+class TestToolRequiredNudge:
+    """A counting question answered with no tool call at all is the model
+    reading the visible extract by eye, which on a long document is wrong
+    by construction. Measured on a 50-page catalogue: it answered 12, then
+    28, where the truth was 554 -- and once wrote the tool call out as
+    prose and invented its result. One pointed corrective round fixed
+    both that and the page-count question."""
+
+    def test_counting_question_without_a_tool_call_triggers_a_retry(self, monkeypatch):
+        client = _RoundAwareFakeClient([
+            # first round: answers by eye, no tool call
+            [{"message": {"content": "There are about 12.", "tool_calls": None}}],
+            # after the nudge: calls the tool properly
+            [{"message": {"content": "", "tool_calls": [
+                {"function": {"name": "count_matching_rows",
+                              "arguments": {"table": "dok1:t1", "column": "Artikel",
+                                            "contains": "A"}}}
+            ]}}],
+            [{"message": {"content": "There is 1.", "tool_calls": None}}],
+        ])
+        _install_fake_client(monkeypatch, client)
+
+        text = "".join(answer(_document(), "How many Artikel are there?",
+                              model="m", host="h", response_language="en"))
+
+        assert client.call_count == 3, "it must be asked again after answering by eye"
+        assert "There are about 12" not in text, "the eyeballed answer must not reach the user"
+        assert "There is 1." in text
+
+    def test_a_plain_question_is_not_held_back_or_retried(self, monkeypatch):
+        client = _RoundAwareFakeClient([
+            [{"message": {"content": "It is an invoice from FARO.", "tool_calls": None}}],
+        ])
+        _install_fake_client(monkeypatch, client)
+
+        text = "".join(answer(_document(), "What is this document about?",
+                              model="m", host="h", response_language="en"))
+
+        assert client.call_count == 1
+        assert "It is an invoice from FARO." in text
+
+    def test_the_nudge_happens_at_most_once(self, monkeypatch):
+        client = _RoundAwareFakeClient([
+            [{"message": {"content": "About 12.", "tool_calls": None}}],
+            [{"message": {"content": "Still about 12.", "tool_calls": None}}],
+        ])
+        _install_fake_client(monkeypatch, client)
+
+        text = "".join(answer(_document(), "How many rows are there?",
+                              model="m", host="h", response_language="en"))
+
+        assert client.call_count == 2, "one corrective round, then it must give up"
+        assert "Still about 12." in text

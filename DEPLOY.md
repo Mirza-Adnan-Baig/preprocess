@@ -239,6 +239,35 @@ re-create it from scratch rather than editing in place.
   (`src/faro_docs/tables.py`, function `find_totals_rows`) for whoever
   picks this up next.
 
+## Two tools that save you guessing
+
+**See what the assistant really extracts from a file** — no model
+involved, so you find out in seconds whether a wrong answer is an
+extraction problem or a model problem:
+
+```bash
+python -m tools.inspect_document "Katalog.pdf" --frage "Zuberhol"
+```
+
+It prints page count, every table, every column with how it was read
+(number vs. identifier kept as text), and the true hit counts for a term.
+If that output is right but the chat answer was wrong, it's the model —
+check the tool-call line under the answer. If that output is already
+wrong, it's extraction.
+
+**Build a realistic test catalogue with known answers**, for when you
+don't have the real file to hand:
+
+```bash
+python -m tools.make_test_document --seiten 41
+```
+
+Writes a PDF, CSV and Excel with the same shape as the real catalogue
+(article number, description, barcode, EAN, German prices, quantity — no
+row-number column), including leading-zero EANs, repeated EANs and
+missing barcodes, then prints the correct answer to every question you'd
+ask. Ask the assistant the same questions and compare.
+
 ## Updating later
 
 If the code changes (new fixes, new formats supported):
@@ -307,6 +336,18 @@ were actually fixed in this code.
   correctly either way — this is a cosmetic freeze during the wait, not
   a failure.
 
+- **The context now always fits the window.** Ollama doesn't reject an
+  over-long prompt — it silently drops the *oldest* tokens, which is the
+  system prompt, i.e. exactly the rules that say don't guess and use the
+  tools. Measured on a generated 50-page catalogue: ~20,000 tokens of
+  context against a 16,384 window, so those rules were being deleted
+  before the model saw them. The context is now budgeted from `NUM_CTX`
+  and shrinks to fit, keeping the table and the document's end.
+- **A counting question answered without calling any tool now triggers
+  one corrective round**, and the first (eyeballed) answer is held back
+  so it never reaches the screen. On the 50-page catalogue this turned
+  "12" and then "28" into the correct **554** — see
+  `docs/question-coverage.md` §9 for the measurements.
 - A long document used to be cut to its first ~13 pages for the model's
   own reading, so anything at the end (totals, payment terms, signature)
   was invisible. The extract now keeps both ends, long tables show their

@@ -120,41 +120,92 @@ document, search for it first.
 | "Multiply column A by column B" | No arbitrary column arithmetic. |
 | Anything needing knowledge outside the document | By design — it answers from the document only. |
 
-## 9. The real remaining weakness: which tool the model picks
+## 9. Which tool the model picks — and what now forces it
 
 The tools are deterministic and correct. What is *not* guaranteed is the
-model choosing the right one and filling it in correctly.
+model choosing the right one and filling it in properly, and this got
+much worse on long documents before it got better.
 
-Measured on the small local test model (qwen2.5:7b) with "What do all the
-Zuberhol parts cost together?":
-- It picked `query_table` correctly, but used `op: equals` with a partial
-  value ("Zuberhol") against a column containing "Zuberhol Akku Typ 3" —
-  zero matches.
-- The tool now answers that with an explicit correction: *"no match with
-  equals; with contains there would be 12 rows; call again with
-  contains; do not invent a number."*
-- The 7B model still did not retry, and made a number up anyway.
+**What was measured on a generated 50-page, 1,845-row catalogue** (built
+by `tools/make_test_document.py`, so the true answers are known) using
+the small local model, asking "How many Zuberhol articles are in this
+list?" — the true answer is **554**:
 
-So: the tool layer does everything it can — it detects the mistake,
-computes what the correct call would return, and says so in plain
-imperative language. Acting on that correction is the model's job, and a
-7B model is simply too weak for it.
+| Attempt | What happened | Answer |
+|---|---|---|
+| Before any fix | Called no tool at all, counted the visible extract by eye | **12** ✗ |
+| After restating the rule next to the question | Named the right tool but wrote the call as *prose* and invented its result | **28** ✗ |
+| After the corrective round | Actually called `count_matching_rows` | **554** ✓ |
 
-**This is the single most important thing to verify at work**, because
-your 27B/35B models should handle exactly this much better. Test it with:
+Three things make that work, and they matter in this order:
 
-> "Was kosten alle Zuberhole zusammen?"
+1. **The context is budgeted to fit the window.** Ollama doesn't reject
+   an over-long prompt — it silently drops the *oldest* tokens, and the
+   oldest thing is the system prompt. On the 50-page document the context
+   came to ~20,000 tokens against a 16,384 window, so the rules about not
+   guessing were being deleted before the model ever saw them. The
+   context now shrinks to fit whatever `NUM_CTX` is set to.
+2. **The key rule is repeated right after the question**, not only at the
+   top, because on a long document the system prompt is thousands of
+   tokens away by the time the model reaches the question.
+3. **A counting question answered with no tool call triggers one
+   corrective round** — "you did not call a tool, call one now, don't
+   give a self-counted number". The first, wrong answer is held back so
+   it never reaches the screen.
 
-Then read the tool-call trace in the answer:
-- `query_table(... op: 'contains' ...)` → correct, trust the number.
+**Still verify this at work**, because it was proven on a 7B model and
+yours are much stronger — but the failure that remained after all this
+was a *format* failure (writing the call instead of making it), which
+larger models do far less. Read the tool-call trace under each answer:
+
+- `count_matching_rows(...)` / `query_table(... op: 'contains' ...)` →
+  correct, trust the number.
 - `sum_column(...)` with no filter → it summed **everything**, not just
-  Zuberhole. The result now says so in its own `hinweis` field.
-- `op: 'equals'` returning 0 with a `hinweis` → watch whether the model
-  retries. If it does, the bigger model has solved this. If it invents a
-  number anyway, tell me and I'll make the tool layer refuse to answer at
-  all rather than let it guess.
+  the group you asked about. The result says so in its own `hinweis`.
+- `op: 'equals'` returning 0 with a `hinweis` → the tool computed what
+  `contains` would return and asked for a retry; watch whether it obeys.
+- **No tool line at all** on a counting question → that should now be
+  impossible; if you see it, tell me.
 
-## 10. Suggested test order at work
+## 10. Testing without the real file
+
+You can't take the 41-page catalogue home, which made testing anywhere
+but at work impossible. Two tools fix that:
+
+**Generate a realistic catalogue with known answers** — same shape as the
+real one (article number, description, barcode, EAN, German prices,
+quantity, no row-number column), including leading-zero EANs, repeated
+EANs and missing barcodes, because all three have broken this pipeline
+before:
+
+```bash
+python -m tools.make_test_document --seiten 41
+```
+
+It writes `test_artikelliste.pdf`, `.csv` and `.xlsx`, then prints the
+correct answer to every question you'd ask — computed from the data, not
+guessed. Ask the assistant the same questions and compare.
+
+**See what the assistant actually extracts from a real file**, with no
+model involved:
+
+```bash
+python -m tools.inspect_document "Katalog.pdf" --frage "Zuberhol"
+```
+
+It prints the page count, every table, every column with how it was
+interpreted (number vs. identifier kept as text) and, with `--frage`, the
+true hit counts. This answers the question that otherwise costs an hour:
+**is a wrong answer an extraction problem or a model problem?** If this
+output is right and the answer was wrong, it's the model — look at the
+tool-call trace. If this output is already wrong, it's extraction.
+
+Verified on the generated 50-page file: all 1,845 rows merged into one
+table across all pages, barcode and EAN kept as exact text (including a
+leading zero), German prices parsed, 554 Zuberhol rows — matching the
+generator's own ground truth exactly.
+
+## 11. Suggested test order at work
 
 1. Short invoice first (2–5 line items) — confirms basics.
 2. `document_info` — "Wie viele Seiten hat das Dokument?" on the 41-pager.
