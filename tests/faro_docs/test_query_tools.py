@@ -357,3 +357,59 @@ class TestContextBudget:
         small = build_context(self._big_document(), max_total_chars=context_budget(8192))
         large = build_context(self._big_document(), max_total_chars=context_budget(32768))
         assert len(large) > len(small)
+
+
+class TestNaturalCallsThatUsedToBeRefused:
+    """Every one of these is a call a model actually made during a
+    twelve-question sweep and got refused for, then gave up on. They were
+    reasonable readings of the tool set; the tools were inconsistent."""
+
+    def test_table_alle_resolves_when_there_is_only_one_table(self):
+        """count_rows accepts table='alle', so a model assumes the other
+        table tools do too. That single mismatch caused most of the
+        failures in the sweep."""
+        assert run_tool("count_matching_rows", {
+            "table": "alle", "column": "Bezeichnung", "contains": "Zuberhol",
+        }, _catalogue()) == 2
+
+    def test_ambiguous_alle_still_refuses_but_names_the_real_ids(self):
+        frame = pd.DataFrame({"A": [1]})
+        documents = [Document(
+            id="dok1", filename="x.xlsx", media_type="application/vnd.ms-excel",
+            tables=[Table(id="dok1:b1", label="Blatt 1", frame=frame),
+                    Table(id="dok1:b2", label="Blatt 2", frame=frame)],
+        )]
+        with pytest.raises(ValueError) as excinfo:
+            run_tool("count_matching_rows", {
+                "table": "alle", "column": "A", "contains": "1",
+            }, documents)
+        assert "dok1:b1" in str(excinfo.value)
+
+    def test_mode_starts_with_answers_a_prefix_question(self):
+        """'How many EANs start with a zero' comes to the counting tool,
+        where plain contains answered a different question -- a zero
+        anywhere in the code (1369) rather than at the front (169)."""
+        assert run_tool("count_matching_rows", {
+            "table": "dok1:t1", "column": "Barcode", "contains": "4051805334476",
+            "mode": "starts_with",
+        }, _catalogue()) == 2
+
+    def test_contains_also_reports_the_prefix_count_when_they_differ(self):
+        """Both readings of an ambiguous count come back labelled, so
+        whichever the question meant is present. 31002 and 30500 contain a
+        zero; neither starts with one."""
+        result = run_tool("count_matching_rows", {
+            "table": "dok1:t1", "column": "Artikelnr", "contains": "0",
+        }, _catalogue())
+        assert result["enthaelt_irgendwo"] == 2
+        assert result["beginnt_damit"] == 0
+
+    def test_a_plain_number_comes_back_when_both_readings_agree(self):
+        assert run_tool("count_matching_rows", {
+            "table": "dok1:t1", "column": "Artikelnr", "contains": "3",
+        }, _catalogue()) == 4
+
+    def test_mode_empty_answers_the_missing_barcode_question(self):
+        assert run_tool("count_matching_rows", {
+            "table": "dok1:t1", "column": "Barcode", "contains": "", "mode": "empty",
+        }, _catalogue()) == 1

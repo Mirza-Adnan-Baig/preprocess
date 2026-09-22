@@ -1183,6 +1183,15 @@ TOOL_SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "table": {"type": "string"}, "column": {"type": "string"},
             "contains": {"type": "string"},
+            "mode": {
+                "type": "string",
+                "description": (
+                    "contains (Standard), starts_with, ends_with, empty "
+                    "oder not_empty -- starts_with z. B. für \"wie viele EANs "
+                    "beginnen mit 0\", empty für \"wie viele Zeilen haben "
+                    "kein Barcode\""
+                ),
+            },
         }, "required": ["table", "column", "contains"]},
     }},
     {"type": "function", "function": {
@@ -1245,8 +1254,9 @@ TOOL_SCHEMAS = [
                 "type": "array",
                 "description": (
                     "Liste von Bedingungen, alle müssen zutreffen. Jede: "
-                    "{\"column\": Spaltenname, \"op\": contains|equals|gt|lt|"
-                    "gte|lte|empty|not_empty, \"value\": Wert}"
+                    "{\"column\": Spaltenname, \"op\": contains|equals|"
+                    "starts_with|ends_with|gt|lt|gte|lte|empty|not_empty, "
+                    "\"value\": Wert}"
                 ),
                 "items": {"type": "object", "properties": {
                     "column": {"type": "string"},
@@ -1403,6 +1413,15 @@ _REMINDER = (
     "document_info für Seitenzahl und Aufbau. Erst danach antworten."
 )
 
+_SEARCH_FIRST = (
+    "STOP. Du behauptest, etwas stehe nicht im Dokument, ohne danach "
+    "gesucht zu haben. Der oben sichtbare Ausschnitt ist bei langen "
+    "Dokumenten unvollständig -- das ist keine Grundlage für diese "
+    "Aussage. Rufe JETZT search_text mit einem passenden Stichwort auf "
+    "(wirklich aufrufen, nicht beschreiben). Erst wenn die Suche nichts "
+    "findet, darfst du sagen, dass es nicht im Dokument steht."
+)
+
 _TOOL_REQUIRED = (
     "STOP. Du hast kein Werkzeug aufgerufen, sondern selbst gezählt oder "
     "geschätzt. Das ist bei dieser Frage immer falsch, weil der oben "
@@ -1424,13 +1443,41 @@ _QUANTITATIVE_HINTS = (
     "fehlt", "leer", "seiten", "how many", "how much", "how often", "count",
     "total", "sum of", "average", "most expensive", "cheapest", "highest",
     "lowest", "duplicate", "missing", "empty", "pages",
+    # A price question rarely says "sum": "was kosten alle X zusammen" and
+    # "what do all the X cost together" both slipped through and were
+    # answered without a tool -- found by sweeping real question wordings.
+    "kosten", "kostet", "preis", "betrag", "wert", "zusammen", "insgesamt",
+    "cost", "price", "worth", "together", "altogether", "combined",
 )
+
+# Phrases that claim something isn't there. Claiming absence without ever
+# having searched is the other half of the same problem: on a long
+# document the visible extract is incomplete, so "it doesn't say" is
+# unfounded unless search_text actually came back empty.
+_ABSENCE_CLAIMS = (
+    "nicht im dokument", "steht nicht", "keine angabe", "nicht enthalten",
+    "nicht erwähnt", "nicht genannt", "kein hinweis", "nicht auffindbar",
+    "not in the document", "no explicit", "not mentioned", "does not contain",
+    "doesn't contain", "could not find", "couldn't find", "no information",
+    "there is no", "not specified", "not stated", "unable to find",
+)
+
+_SEARCH_TOOLS = {
+    "search_text", "count_text_occurrences", "find_rows",
+    "count_matching_rows", "query_table", "get_row",
+}
 
 
 def needs_a_tool(question: str) -> bool:
     """Whether this question can only be answered correctly by a tool."""
     lowered = (question or "").lower()
     return any(hint in lowered for hint in _QUANTITATIVE_HINTS)
+
+
+def claims_absence(text: str) -> bool:
+    """Whether an answer asserts the document doesn't say something."""
+    lowered = (text or "").lower()
+    return any(claim in lowered for claim in _ABSENCE_CLAIMS)
 
 
 _FORCE_ENGLISH = (
@@ -1612,7 +1659,27 @@ def run_tool(name: str, args: dict, documents: list[Document]):
                         + ("…" if right < len(text) else ""),
                     })
                 start = position + len(needle)
-        return {"treffer_gesamt": total, "stellen": hits}
+        if total:
+            return {"treffer_gesamt": total, "stellen": hits}
+        # Nothing found. The questions that lead here -- who sent this, what
+        # is the invoice number, which company -- are almost always answered
+        # in the first block of the document, and a model that searched the
+        # wrong word otherwise concludes the document doesn't say (measured:
+        # it decided a 50-page list had no company name on it, while the
+        # name was in the opening line). Hand that block back instead.
+        opening = " ".join((scope[0].text or "")[:600].split()) if scope else ""
+        return {
+            "treffer_gesamt": 0,
+            "stellen": [],
+            "hinweis": (
+                f"„{search}“ kommt im Text nicht vor. Vielleicht war das "
+                "Stichwort falsch gewählt -- hier ist der Anfang des "
+                "Dokuments, wo Absender, Nummern und Datum normalerweise "
+                "stehen. Mit einem anderen Stichwort erneut suchen, bevor "
+                "du sagst, etwas stehe nicht im Dokument."
+            ),
+            "dokumentanfang": opening,
+        }
 
     if name == "document_info":
         scope = _resolve_documents(documents, args.get("document"))
@@ -1672,10 +1739,27 @@ def run_tool(name: str, args: dict, documents: list[Document]):
 
     table_id = args.get("table")
     if table_id not in tables:
-        raise ValueError(
-            f"Unbekannte Tabelle „{table_id}“. Gültige Tabellen: {list(tables)}"
+        # count_rows accepts 'alle', so a model reasonably assumes every
+        # table tool does -- and then gets "unknown table" and gives up.
+        # Measured over a twelve-question sweep, this one mismatch caused
+        # most of the failures. When the intent is unambiguous (the scoped
+        # document has exactly one table, which is the normal case) it is
+        # resolved instead of refused; when it is genuinely ambiguous the
+        # error names the real ids so the retry can be correct.
+        candidates = (
+            list(tables.values())
+            if table_id == "alle_dokumente"
+            else [t for d in documents[-1:] for t in d.tables]
         )
-    table = tables[table_id]
+        if table_id in (None, "", "alle", "alle_dokumente") and len(candidates) == 1:
+            table = candidates[0]
+        else:
+            raise ValueError(
+                f"Unbekannte Tabelle „{table_id}“. Gültige Tabellen: {list(tables)}. "
+                "Rufe das Werkzeug erneut mit einer dieser Ids auf."
+            )
+    else:
+        table = tables[table_id]
 
     if name == "count_rows":
         return table.row_count()
@@ -1712,6 +1796,21 @@ def run_tool(name: str, args: dict, documents: list[Document]):
         if "contains" not in args:
             _require(args, "contains", name)  # raises, naming the missing field
         needle = str(args.get("contains") or "").lower().strip()
+        mode = str(args.get("mode") or "contains").lower()
+        if mode not in {"contains", "starts_with", "ends_with", "empty", "not_empty"}:
+            raise ValueError(
+                f"Unbekannter mode „{mode}“. Möglich: contains, starts_with, "
+                "ends_with, empty, not_empty."
+            )
+        if mode in {"empty", "not_empty"}:
+            # "How many rows have no barcode" naturally comes to this tool
+            # with mode='empty'; refusing it just sent the model in circles.
+            values = table.frame[column]
+            is_empty = values.isna() | values.astype(str).str.strip().eq("")
+            blank_mask = is_empty if mode == "empty" else ~is_empty
+            if name == "count_matching_rows":
+                return int(blank_mask.sum())
+            return table.frame[blank_mask].head(50).to_dict(orient="records")
         # Searching for the *text* "nan"/"leer" is an attempt to find empty
         # cells, and it silently finds nothing: an empty cell is missing
         # data, not the word "nan" (pandas keeps it missing through
@@ -1724,9 +1823,38 @@ def run_tool(name: str, args: dict, documents: list[Document]):
                 f"verwenden: filters=[{{\"column\": \"{column}\", \"op\": \"empty\"}}] "
                 "(oder \"not_empty\" für gefüllte Felder)."
             )
-        mask = table.frame[column].astype(str).str.lower().str.contains(needle, na=False)
+        as_text = table.frame[column].astype(str).str.lower()
+        mask = {
+            # "How many EANs start with a zero" went to this tool, not to
+            # query_table, and `contains` counted a zero anywhere in the
+            # code -- 1369 instead of 169. Prefix and suffix matching lives
+            # here too now, so the natural tool choice is also the correct
+            # one.
+            "contains": lambda: as_text.str.contains(needle, na=False, regex=False),
+            "starts_with": lambda: as_text.str.startswith(needle, na=False),
+            "ends_with": lambda: as_text.str.endswith(needle, na=False),
+        }[mode]()
         if name == "count_matching_rows":
-            return int(mask.sum())
+            total = int(mask.sum())
+            if mode == "contains":
+                # "How many EANs start with a zero" comes to this tool, not
+                # to query_table, and `contains` answers a different
+                # question: a zero anywhere in the code (1369) rather than
+                # at the front (169). Both readings are cheap to compute,
+                # so both are returned, each labelled, rather than
+                # answering only the one that was literally asked for.
+                prefix_total = int(as_text.str.startswith(needle, na=False).sum())
+                if prefix_total != total:
+                    return {
+                        "enthaelt_irgendwo": total,
+                        "beginnt_damit": prefix_total,
+                        "hinweis": (
+                            "Bei einer Frage nach „beginnt mit“ / „starts "
+                            "with“ die Zahl „beginnt_damit“ nennen, sonst "
+                            "„enthaelt_irgendwo“."
+                        ),
+                    }
+            return total
         return table.frame[mask].head(50).to_dict(orient="records")
 
     if name == "column_stats":
@@ -1792,14 +1920,20 @@ def run_tool(name: str, args: dict, documents: list[Document]):
             if operator in {"empty", "not_empty"}:
                 is_empty = column_values.isna() | column_values.astype(str).str.strip().eq("")
                 condition_mask = is_empty if operator == "empty" else ~is_empty
-            elif operator in {"contains", "equals"}:
+            elif operator in {"contains", "equals", "starts_with", "ends_with"}:
                 text = str("" if raw_value is None else raw_value).lower()
                 as_text = column_values.astype(str).str.lower().str.strip()
-                condition_mask = (
-                    as_text.str.contains(text, na=False, regex=False)
-                    if operator == "contains"
-                    else as_text.eq(text)
-                )
+                condition_mask = {
+                    "contains": lambda: as_text.str.contains(text, na=False, regex=False),
+                    "equals": lambda: as_text.eq(text),
+                    # A prefix or suffix question is common on codes -- EAN
+                    # country prefixes, article-number ranges, "everything
+                    # starting with 33". Without these, "how many EANs start
+                    # with a zero" had no correct call at all: `contains`
+                    # would match a zero anywhere in the code.
+                    "starts_with": lambda: as_text.str.startswith(text, na=False),
+                    "ends_with": lambda: as_text.str.endswith(text, na=False),
+                }[operator]()
             elif operator in {"gt", "lt", "gte", "lte"}:
                 numbers = _numeric_series(table, column)
                 threshold = _parse_threshold(raw_value)
@@ -1817,7 +1951,8 @@ def run_tool(name: str, args: dict, documents: list[Document]):
             else:
                 raise ValueError(
                     f"Unbekannter Operator „{operator}“. Möglich: contains, "
-                    "equals, gt, lt, gte, lte, empty, not_empty."
+                    "equals, starts_with, ends_with, gt, lt, gte, lte, "
+                    "empty, not_empty."
                 )
             mask &= condition_mask
             applied.append(
@@ -2178,7 +2313,13 @@ def answer(
         content = ""
         tool_calls = None
         seen_output = False
-        withhold = quantitative and not used_tool_names and not nudged
+        # Hold back any answer produced before a single tool has run: it
+        # is either a self-counted number or an unfounded "it doesn't say",
+        # and both get one corrective round below. Releasing it first would
+        # put the wrong answer on screen and then argue with it. Once a
+        # tool has run, or the correction has been used, streaming is live
+        # again as normal.
+        withhold = not used_tool_names and not nudged
         try:
             for item in _stream_with_heartbeat(
                 client, model, messages, tools,
@@ -2215,7 +2356,21 @@ def answer(
             {"role": "assistant", "content": content, "tool_calls": tool_calls}
         )
         if not tool_calls:
-            if withhold and not used_tool_names:
+            # Claiming the document doesn't say something, without ever
+            # having searched it, is unfounded: the visible extract is
+            # incomplete on any long document. Found by sweeping real
+            # questions -- asked which company issued a 50-page list, it
+            # answered "no explicit company name is mentioned" while the
+            # name sat in the document text.
+            if (
+                not nudged
+                and claims_absence(content)
+                and not (used_tool_names & _SEARCH_TOOLS)
+            ):
+                nudged = True
+                messages.append({"role": "user", "content": _SEARCH_FIRST})
+                continue
+            if quantitative and not nudged and not used_tool_names:
                 # It answered a counting question without calling anything.
                 # Measured on a 50-page catalogue: it counted by eye and
                 # said 12, then 28, where the real answer was 554 -- and in

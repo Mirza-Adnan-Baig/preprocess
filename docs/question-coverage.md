@@ -153,10 +153,33 @@ Three things make that work, and they matter in this order:
    give a self-counted number". The first, wrong answer is held back so
    it never reaches the screen.
 
-**Still verify this at work**, because it was proven on a 7B model and
-yours are much stronger — but the failure that remained after all this
-was a *format* failure (writing the call instead of making it), which
-larger models do far less. Read the tool-call trace under each answer:
+### The measured score, honestly
+
+Twelve questions, all with known answers, run as one batch against the
+50-page generated catalogue on the small local model (qwen2.5:7b):
+
+| | Score |
+|---|---|
+| Before this round of work | **5 / 12** |
+| After making `table: "alle"` work on every table tool | 6 / 12 |
+| After `mode: starts_with` / `empty` on the counting tool | **8 / 12** |
+
+Two things are worth knowing about that number:
+
+- **Run-to-run variance is large.** Every one of the four remaining
+  failures *passed* when the same question was asked on its own. A small
+  model is not deterministic, so a single successful test proves much
+  less than it feels like it does. Test a few times before concluding
+  anything.
+- **All four remaining failures are the same thing**: the model writes
+  the tool call out as text (*"Let's use the `find_duplicates` tool…"*)
+  instead of actually emitting it, then either stops or invents. That is
+  a tool-calling *format* weakness of small models specifically, and it
+  is the part I cannot fix from the tool layer. Larger models are
+  markedly better at it — which is the main reason to expect better
+  results on your 27B/35B than these numbers suggest.
+
+**Still verify this at work.** Read the tool-call trace under each answer:
 
 - `count_matching_rows(...)` / `query_table(... op: 'contains' ...)` →
   correct, trust the number.
