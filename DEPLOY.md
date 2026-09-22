@@ -172,6 +172,13 @@ re-create it from scratch rather than editing in place.
 - Answers ordinary questions too — summaries, "who is the sender",
   "what does this say" — directly from the document's real text, not
   just counting questions.
+- Counts how many times a word or phrase appears in a document's free
+  text (a "Ctrl+F"-style count), computed in code, not guessed by the
+  model. Found missing during real testing: asked "how many times does
+  the word X appear," the model had no tool for this at all — only table
+  rows/columns were deterministic — so it guessed, and guessed very
+  wrong (26 instead of the real 381 on a real document). Works on any
+  document, including one with no table at all.
 - Says plainly when something isn't in the document, instead of
   inventing an answer.
 
@@ -230,6 +237,10 @@ were actually fixed in this code.
 - A document large enough to exceed Ollama's real default context window
   (4096 tokens — see the `NUM_CTX` row above) no longer gets silently
   truncated mid-table before the model ever sees it.
+- Asking "how many times does word X appear" had no matching tool at all
+  (see "What this can do" above) — confirmed live on a real document: the
+  model guessed 26 where the real answer was 381. A dedicated tool now
+  computes this in code; confirmed live afterward, correct every time.
 - **The browser's own connection can drop and reconnect while a long
   answer is being generated** (a "connection lost, reconnecting..." banner
   during the wait) — confirmed at a real office deployment. Root cause,

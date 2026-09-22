@@ -51,6 +51,7 @@ class _FakeClient:
 
     def chat(self, model, messages, tools, stream, options=None):
         self.last_options = options
+        self.last_tools = tools
         time.sleep(self.delay)
         yield from self.chunks
 
@@ -121,6 +122,61 @@ def test_no_heartbeat_when_the_model_answers_immediately(monkeypatch):
     text = "".join(chunks)
 
     assert DENKT_NACH not in text
+
+
+def test_tools_are_offered_even_for_a_document_with_no_tables(monkeypatch):
+    """count_text_occurrences needs no table -- a plain-text upload with
+    nothing extractable as a table must still get tools, not be silently
+    limited to the model's own unreliable reading-based counting (this
+    used to be gated on _all_tables(documents), which was empty/falsy for
+    a table-less document)."""
+    text_only = [
+        Document(id="dok1", filename="a.txt", media_type="text/plain", text="hallo welt")
+    ]
+    client = _FakeClient(
+        delay=0.0, chunks=[{"message": {"content": "Antwort.", "tool_calls": None}}],
+    )
+    _install_fake_client(monkeypatch, client)
+
+    list(answer(text_only, "Frage?", model="m", host="h"))
+
+    assert client.last_tools is not None
+    assert any(t["function"]["name"] == "count_text_occurrences" for t in client.last_tools)
+
+
+class _RoundAwareFakeClient:
+    """Returns a different canned response on each successive .chat() call,
+    to simulate a tool-call round followed by the model's final answer."""
+
+    def __init__(self, rounds: list[list[dict]]):
+        self.rounds = rounds
+        self.call_count = 0
+
+    def chat(self, model, messages, tools, stream, options=None):
+        chunks = self.rounds[self.call_count]
+        self.call_count += 1
+        yield from chunks
+
+
+def test_footer_says_text_search_not_table_when_only_that_tool_was_used(monkeypatch):
+    """count_text_occurrences answers a question with no table involved at
+    all -- the footer must not claim 'computed from the table'."""
+    client = _RoundAwareFakeClient([
+        [{"message": {"content": "", "tool_calls": [
+            {"function": {"name": "count_text_occurrences",
+                          "arguments": {"search": "GmbH", "document": "alle"}}}
+        ]}}],
+        [{"message": {"content": "It appears once.", "tool_calls": None}}],
+    ])
+    _install_fake_client(monkeypatch, client)
+
+    text = "".join(answer(
+        _document(), "How often does GmbH appear?", model="m", host="h",
+        response_language="en",
+    ))
+
+    assert "text search" in text.lower()
+    assert "computed from the table" not in text.lower()
 
 
 def test_num_ctx_is_always_passed_to_ollama(monkeypatch):

@@ -56,11 +56,13 @@ RAG_WARNUNG_EN = (
 
 _QUELLEN = {
     "tabelle": "aus der Tabelle berechnet",
+    "textsuche": "per Textsuche im Dokument gezählt",
     "text": "aus dem Dokumenttext gelesen",
     "ocr": "per Texterkennung gelesen (unsicher)",
 }
 _QUELLEN_EN = {
     "tabelle": "computed from the table",
+    "textsuche": "counted via a text search of the document",
     "text": "read from the document text",
     "ocr": "read via text recognition (uncertain)",
 }
@@ -147,7 +149,7 @@ def translate_notes(notes: list[str], language: str) -> list[str]:
 def provenance_footer(sources: set[str], notes: list[str], language: str = "de") -> str:
     """One short line saying where the answer came from, in the given language."""
     quellen = _QUELLEN if language == "de" else _QUELLEN_EN
-    parts = [quellen[s] for s in ("tabelle", "text", "ocr") if s in sources]
+    parts = [quellen[s] for s in ("tabelle", "textsuche", "text", "ocr") if s in sources]
     if not parts and not notes:
         return ""
     lines = []

@@ -74,14 +74,36 @@ TOOL_SCHEMAS = [
             "contains": {"type": "string"},
         }, "required": ["table", "column", "contains"]},
     }},
+    {"type": "function", "function": {
+        "name": "count_text_occurrences",
+        "description": (
+            "Zählt, wie oft ein Wort oder eine Zeichenfolge im Fließtext des "
+            "Dokuments vorkommt (wie eine Strg+F-Suche, Groß-/Kleinschreibung "
+            "wird ignoriert). NICHT für Zeilen oder Spalten einer Tabelle -- "
+            "dafür count_rows oder find_rows verwenden. Mit document='alle' "
+            "wird NUR im zuletzt angehängten Dokument gesucht (normale Wahl "
+            "bei einer einfachen Frage); mit document='alle_dokumente' über "
+            "wirklich jedes Dokument im Chat hinweg."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "search": {"type": "string", "description": "Der gesuchte Text"},
+            "document": {
+                "type": "string",
+                "description": "Dokument-Id, 'alle' (nur neuestes Dokument), oder 'alle_dokumente' (wirklich alles)",
+            },
+        }, "required": ["search", "document"]},
+    }},
 ]
 
 SYSTEM_PROMPT = (
     "Du beantwortest Fragen zu hochgeladenen Dokumenten. Es kann sich um "
     "alles handeln: Rechnungen, Lieferscheine, Verträge, Berichte, Listen.\n\n"
     "Regeln:\n"
-    "1. Zahlen, Anzahlen und Summen NIE selbst zählen oder addieren. Rufe das "
-    "passende Werkzeug auf. Deine eigene Rechnung ist nicht verlässlich.\n"
+    "1. Zahlen, Anzahlen und Summen NIE selbst zählen oder addieren -- auch "
+    "nicht, wie oft ein Wort oder eine Textstelle im Dokument vorkommt. Rufe "
+    "das passende Werkzeug auf: count_rows/sum_column für Tabellenzeilen und "
+    "-spalten, count_text_occurrences für ein Wort oder eine Zeichenfolge im "
+    "Fließtext. Deine eigene Zählung oder Rechnung ist nicht verlässlich.\n"
     "2. Fragen nach der Anzahl der Tabellen, Blätter oder Dokumente IMMER mit "
     "list_tables beziehungsweise list_documents beantworten, nie schätzen.\n"
     "3. Eine Datei kann mehrere Tabellen enthalten, und es können mehrere "
@@ -140,6 +162,29 @@ def _all_tables(documents: list[Document]) -> dict:
 
 
 def run_tool(name: str, args: dict, documents: list[Document]):
+    if name == "count_text_occurrences":
+        search = args.get("search") or ""
+        if not search:
+            raise ValueError("Kein Suchbegriff angegeben.")
+        needle = search.lower()
+        document_arg = args.get("document")
+        if document_arg == "alle_dokumente":
+            return sum(document.text.lower().count(needle) for document in documents)
+        if not document_arg or document_arg == "alle":
+            # Same reasoning as count_rows's 'alle': Open WebUI hands back
+            # every file ever attached in a chat on every turn, so a plain
+            # "how many times does X appear" question must not silently
+            # fold in an older, no-longer-relevant document.
+            newest = documents[-1] if documents else None
+            return newest.text.lower().count(needle) if newest else 0
+        matches = [d for d in documents if d.id == document_arg]
+        if not matches:
+            raise ValueError(
+                f"Unbekanntes Dokument „{document_arg}“. Gültige Dokumente: "
+                f"{[d.id for d in documents]}"
+            )
+        return matches[0].text.lower().count(needle)
+
     if name == "list_documents":
         return {
             document.id: {
@@ -329,8 +374,12 @@ def answer(
         {"role": "system", "content": _system_prompt_for(response_language)},
         {"role": "user", "content": f"DOKUMENTE:\n{context}\n\nFRAGE: {question}"},
     ]
-    tools = TOOL_SCHEMAS if _all_tables(documents) else None
-    used_tools = False
+    # Not gated on _all_tables(documents): count_text_occurrences works on a
+    # document's free text and needs no table at all -- a pure-text upload
+    # (no extractable table) must still get tools, not be silently limited
+    # to the model's own unreliable reading-based counting.
+    tools = TOOL_SCHEMAS if documents else None
+    used_tool_names: set[str] = set()
 
     for _ in range(max_rounds):
         content = ""
@@ -372,16 +421,22 @@ def answer(
             {"role": "assistant", "content": content, "tool_calls": tool_calls}
         )
         if not tool_calls:
-            sources = {"tabelle"} if used_tools else {"text"}
+            sources = set()
+            if used_tool_names & {"count_text_occurrences"}:
+                sources.add("textsuche")
+            if used_tool_names - {"count_text_occurrences", "list_documents"}:
+                sources.add("tabelle")
+            if not sources:
+                sources = {"text"}
             notes = [n for d in documents for n in d.notes]
             notes += [n for d in documents for t in d.tables for n in t.notes]
             notes = translate_notes(notes, response_language or "de")
             yield provenance_footer(sources, notes, language=response_language or "de")
             return
 
-        used_tools = True
         for call in tool_calls:
             name = call["function"]["name"]
+            used_tool_names.add(name)
             args = call["function"]["arguments"]
             try:
                 result = run_tool(name, args, documents)

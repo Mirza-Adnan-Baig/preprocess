@@ -70,13 +70,80 @@ class TestTools:
         assert len(rows) == 1 and rows[0]["Artikel"] == "B"
 
 
+def _text_documents():
+    """Documents with no tables at all -- a plain-text upload -- and text
+    with a known, hand-countable number of occurrences of a search term."""
+    return [
+        Document(
+            id="dok1", filename="a.txt", media_type="text/plain",
+            text="Zuberhol Zuberhol zuberhol nichts Zubehör Zuberhol",
+        ),
+        Document(
+            id="dok2", filename="b.txt", media_type="text/plain",
+            text="Zuberhol einmal hier",
+        ),
+    ]
+
+
+class TestCountTextOccurrences:
+    def test_counts_case_insensitive_matches_in_one_document(self):
+        assert run_tool(
+            "count_text_occurrences", {"search": "Zuberhol", "document": "dok1"},
+            _text_documents(),
+        ) == 4  # 3x "Zuberhol"/"zuberhol" + 1x inside "Zubehör" is NOT a match
+
+    def test_alle_scopes_to_most_recently_attached_document(self):
+        """Same reasoning as count_rows's 'alle': a stale earlier upload
+        must not silently get folded into a plain word-count question."""
+        assert run_tool(
+            "count_text_occurrences", {"search": "Zuberhol", "document": "alle"},
+            _text_documents(),
+        ) == 1
+
+    def test_alle_dokumente_is_the_real_cross_document_total(self):
+        assert run_tool(
+            "count_text_occurrences",
+            {"search": "Zuberhol", "document": "alle_dokumente"},
+            _text_documents(),
+        ) == 5
+
+    def test_empty_search_term_raises_rather_than_returning_a_bogus_count(self):
+        with pytest.raises(ValueError):
+            run_tool(
+                "count_text_occurrences", {"search": "", "document": "alle"},
+                _text_documents(),
+            )
+
+    def test_unknown_document_names_the_valid_ids(self):
+        with pytest.raises(ValueError) as excinfo:
+            run_tool(
+                "count_text_occurrences",
+                {"search": "x", "document": "gibtsnicht"},
+                _text_documents(),
+            )
+        assert "dok1" in str(excinfo.value) and "dok2" in str(excinfo.value)
+
+    def test_works_on_a_document_with_no_tables_at_all(self):
+        """The whole point of this tool: a plain-text upload with nothing
+        extractable as a table must still get a deterministic word count,
+        not be limited to the model's own unreliable reading."""
+        assert run_tool(
+            "count_text_occurrences", {"search": "hier", "document": "dok2"},
+            _text_documents(),
+        ) == 1
+
+
 class TestSchemas:
-    def test_every_schema_requires_an_explicit_table_except_the_listers(self):
+    def test_every_schema_requires_an_explicit_scope_except_the_listers(self):
+        """Every tool that can scope to one table/document out of several
+        must require that scope explicitly -- silently defaulting is how a
+        stale, no-longer-relevant upload gets folded into an answer."""
         for schema in TOOL_SCHEMAS:
             function = schema["function"]
             if function["name"] in {"list_documents", "list_tables"}:
                 continue
-            assert "table" in function["parameters"]["required"]
+            required = function["parameters"]["required"]
+            assert "table" in required or "document" in required
 
 
 class TestContext:

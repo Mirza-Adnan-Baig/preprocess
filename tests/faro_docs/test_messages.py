@@ -47,6 +47,15 @@ def test_footer_can_render_in_english():
     assert "Herkunft" not in footer
 
 
+def test_footer_distinguishes_text_search_from_a_table():
+    """count_text_occurrences (a Ctrl+F-style word count in free text) is
+    not a table lookup -- the footer must say so distinctly, not claim
+    'computed from the table' for a document that has no table at all."""
+    footer = messages_de.provenance_footer({"textsuche"}, [])
+    assert "textsuche" in footer.lower() or "gezählt" in footer.lower()
+    assert "tabelle" not in footer.lower()
+
+
 class TestTranslateNotes:
     def test_passes_through_unchanged_for_german(self):
         notes = ["Datei wurde als utf-8 gelesen."]
