@@ -64,6 +64,36 @@ class TestDetection:
         style, _, _ = detect_numeric_format(["0", "1", "2"])
         assert style == "integer"
 
+    def test_long_unique_digit_strings_with_no_leading_zero_are_still_not_numeric(self):
+        """A real invoice's EAN/barcode column can easily have zero
+        leading-zero examples by pure chance (EAN-13 codes are ~uniform
+        13-digit numbers, so only ~1 in 10 starts with 0) -- but it's still
+        an identifier, not a quantity. Found on a real invoice: two
+        different 13-digit EAN codes, neither starting with 0, both
+        silently rendered as the *same* value once converted to float64
+        ("4.05181e+12" for both -- genuinely indistinguishable), and a
+        'sum'/'average' computed over them as if they were amounts."""
+        style, rule, confident = detect_numeric_format(
+            ["4051805334476", "4051805329656"]
+        )
+        assert style == "none"
+        assert confident
+
+    def test_short_or_repeated_plain_integers_are_still_treated_as_quantities(self):
+        """The long+unique heuristic must not swallow a genuine Menge
+        column -- real quantities are short and often repeat."""
+        style, _, _ = detect_numeric_format(["1", "3", "1", "5", "2"])
+        assert style == "integer"
+
+    def test_a_five_digit_article_number_is_below_the_identifier_threshold(self):
+        """Deliberately conservative: a 5-6 digit article/customer number
+        is genuinely ambiguous (could plausibly be a real large quantity
+        in some business), so it's left as a number rather than guessed
+        at -- only long (8+ digit), near-unique codes are confidently
+        identifiers."""
+        style, _, _ = detect_numeric_format(["33447", "32965"])
+        assert style == "integer"
+
     def test_non_numeric_column_is_none(self):
         style, _, _ = detect_numeric_format(["iPhone Display", "USB-C Kabel"])
         assert style == "none"

@@ -163,12 +163,22 @@ re-create it from scratch rather than editing in place.
   delimiters (`;`), and excludes a "Gesamt" total row from being
   double-counted.
 - Never mistakes an ID-like column (EAN/barcode, article number, postal
-  code — anything that's just digits, possibly with a leading zero) for a
-  quantity. Found on a real product export: a column of EAN codes was
-  being silently turned into numbers, stripping the leading zero from
-  every code that had one (`0107610691403` became `107610691403` — a
-  different, wrong code). Fixed at the root: any column with a leading
-  zero anywhere in it is now always kept as exact text.
+  code — anything that's just digits) for a quantity, two ways:
+  - Any column with a leading zero anywhere in it is kept as exact text.
+    Found on a real product export: a column of EAN codes was being
+    silently turned into numbers, stripping the leading zero from every
+    code that had one (`0107610691403` became `107610691403` — a
+    different, wrong code).
+  - A column of long (8+ digit), almost-all-unique numbers is *also* kept
+    as text even with no leading zero anywhere — a real invoice's EAN
+    column doesn't always happen to have one (only roughly 1 in 10 EAN
+    codes starts with a 0), but two *different* 13-digit EAN codes were
+    still both silently converted to the exact same displayed value once
+    turned into a number (`4.05181e+12` for both — genuinely
+    indistinguishable), and a nonsense "average barcode" got computed.
+    A real Menge/Anzahl quantity is short and repeats; this combination
+    of length and near-uniqueness is the reliable signal it's an
+    identifier instead.
 - Answers ordinary questions too — summaries, "who is the sender",
   "what does this say" — directly from the document's real text, not
   just counting questions.

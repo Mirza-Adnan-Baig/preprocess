@@ -118,6 +118,23 @@ def detect_numeric_format(
         # column is left as text instead, exactly like any other
         # non-numeric column.
         return "none", RULE_NONE, True
+
+    plain_values = [c for c in cleaned if _PLAIN_INTEGER.match(c)]
+    if plain_values:
+        min_length = min(len(v) for v in plain_values)
+        unique_ratio = len(set(plain_values)) / len(plain_values)
+        if min_length >= 8 and unique_ratio >= 0.8:
+            # No leading zero this time, but a column of long (8+ digit),
+            # near-unique plain numbers is still an identifier (EAN/GTIN,
+            # barcode, IBAN-like account number), never a real quantity --
+            # found on a real invoice: two different 13-digit EAN codes
+            # both silently converted to the *same* float64 value once
+            # rendered ("4.05181e+12" for both, genuinely indistinguishable
+            # to the model), and FAKTEN computed a meaningless "average
+            # barcode". A genuine Menge/Anzahl column is short and full of
+            # repeats; this combination of length and near-uniqueness is
+            # not.
+            return "none", RULE_NONE, True
     return "integer", RULE_INTEGER, True
 
 
