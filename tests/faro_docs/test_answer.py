@@ -60,6 +60,25 @@ class TestTools:
             run_tool("count_rows", {"table": "gibtsnicht"}, _documents())
         assert "dok1:t1" in str(excinfo.value)
 
+    @pytest.mark.parametrize(
+        "tool,args",
+        [
+            ("sum_column", {"table": "dok1:t1"}),
+            ("get_row", {"table": "dok1:t1"}),
+            ("find_rows", {"table": "dok1:t1", "column": "Artikel"}),
+            ("count_matching_rows", {"table": "dok1:t1", "column": "Artikel"}),
+        ],
+    )
+    def test_missing_required_argument_names_the_field_not_a_bare_keyerror(self, tool, args):
+        """A raw KeyError's own text is just "'column'" -- unhelpful for a
+        model deciding whether to retry. Confirmed live: a real model
+        omitted a required argument, got an unhelpful error, and then
+        fabricated an answer instead of retrying -- the message must be
+        specific enough to make a correct retry likely."""
+        with pytest.raises(ValueError) as excinfo:
+            run_tool(tool, args, _documents())
+        assert "Pflichtfeld" in str(excinfo.value)
+
     def test_get_row(self):
         row = run_tool("get_row", {"table": "dok1:t1", "index": 0}, _documents())
         assert row["Artikel"] == "A"
@@ -68,6 +87,37 @@ class TestTools:
         rows = run_tool("find_rows", {"table": "dok1:t1", "column": "Artikel",
                                       "contains": "B"}, _documents())
         assert len(rows) == 1 and rows[0]["Artikel"] == "B"
+
+    def test_count_matching_rows(self):
+        assert run_tool(
+            "count_matching_rows",
+            {"table": "dok1:t1", "column": "Artikel", "contains": "B"},
+            _documents(),
+        ) == 1
+
+    def test_count_matching_rows_is_exact_even_beyond_find_rows_preview_cap(self):
+        """find_rows previews only the first 50 matches -- a real product
+        table (e.g. 41 pages of barcode/EAN rows merged into one table)
+        with more matches than that must not be undercounted by treating
+        the preview's length as the real total."""
+        frame = pd.DataFrame({"Artikel": [f"Zuberhol {i}" for i in range(80)]})
+        documents = [
+            Document(
+                id="dok1", filename="a.csv", media_type="text/csv", text="",
+                tables=[Table(id="dok1:t1", label="Tabelle 1", frame=frame)],
+            )
+        ]
+        assert run_tool(
+            "count_matching_rows",
+            {"table": "dok1:t1", "column": "Artikel", "contains": "Zuberhol"},
+            documents,
+        ) == 80
+        preview = run_tool(
+            "find_rows",
+            {"table": "dok1:t1", "column": "Artikel", "contains": "Zuberhol"},
+            documents,
+        )
+        assert len(preview) == 50  # confirms the undercount find_rows alone would give
 
 
 def _text_documents():

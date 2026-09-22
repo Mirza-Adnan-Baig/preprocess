@@ -107,7 +107,7 @@ Five values, all optional to change:
 |---|---|---|
 | `MODEL` | `qwen3.6:27b` | Must exactly match what `ollama list` shows on the Mac Studio. Change this if the model is tagged differently. |
 | `OLLAMA_HOST` | *(empty → auto)* | Where to reach Ollama. Leave empty first — it tries a couple of sensible defaults automatically. Only set this yourself if you get a "model not reachable" error (see Troubleshooting). |
-| `MAX_TEXT_CHARS` | `40000` | How much of a document's raw text gets sent to the model before it's trimmed (with a visible notice, never silently). Table data and computed counts are never affected by this — only free-text answers on a very long document. |
+| `MAX_TEXT_CHARS` | `40000` | How much of a document's raw extracted text (roughly 13–16 pages, at ~2,500–3,000 characters per dense page) the model reads *directly*, before it's trimmed (with a visible notice, never silently) — a very dense, many-page document (e.g. a 41-page parts catalog) can genuinely exceed this. This limit is **not** related to word/character frequency in any way — it's purely the total length of the extracted text. It also does **not** affect any tool (`count_rows`, `sum_column`, `get_row`, `find_rows`, `count_matching_rows`, `count_text_occurrences`) or FAKTEN — those always see the complete document, however long, because they run in code against the real extracted data, not the trimmed text the model reads. This only limits free-form reading of raw text beyond a tool's reach (e.g. "summarize what it says near the end" on a very long document). |
 | `NUM_CTX` | `16384` | Ollama's context window, in tokens. **Important:** Ollama silently defaults an unconfigured model to a 4096-token window regardless of what the model itself supports — confirmed directly against a real local model with `ollama ps`. A document with a couple hundred table rows can already exceed that, and Ollama's response to running out of room is to quietly drop the *oldest* part of the prompt, not to show an error — the model then answers confidently from a table it never fully saw. 16384 comfortably covers the default `MAX_TEXT_CHARS`. If you ever raise `MAX_TEXT_CHARS`, raise this too. You can confirm the real value in effect at any time by running `ollama ps` on the Mac Studio right after asking a question — the `CONTEXT` column should read `16384` (or whatever you set), not `4096`. |
 | `RESPONSE_LANGUAGE` | *(empty → dynamic)* | Leave empty for real use: it answers in whichever language the question was asked in. Set to `en` only for your own testing if you don't want to read German status messages — see the note about this under "Known limitations" below, since small models don't always honor it. |
 
@@ -172,13 +172,23 @@ re-create it from scratch rather than editing in place.
 - Answers ordinary questions too — summaries, "who is the sender",
   "what does this say" — directly from the document's real text, not
   just counting questions.
-- Counts how many times a word or phrase appears in a document's free
-  text (a "Ctrl+F"-style count), computed in code, not guessed by the
-  model. Found missing during real testing: asked "how many times does
-  the word X appear," the model had no tool for this at all — only table
-  rows/columns were deterministic — so it guessed, and guessed very
-  wrong (26 instead of the real 381 on a real document). Works on any
-  document, including one with no table at all.
+- Counts how many times a word or phrase appears — two different ways,
+  chosen automatically for whichever is actually reliable:
+  - **On a real table** (e.g. "how many Zuberhol accessories are there" on
+    a parts catalog): counts matching *rows* in the right column
+    (`count_matching_rows`), which is what a product catalog with
+    repeated page headers/footers on every page actually needs — a plain
+    text search over the raw extracted text would double-count those
+    repeated headers and get thrown off by words split across a line
+    wrap. Confirmed exact against a hand-built 120-row test catalog
+    (40 real matches, tool returned 40).
+  - **In free text with no relevant table** (e.g. counting a word in a
+    contract or report): a "Ctrl+F"-style text search
+    (`count_text_occurrences`) over the complete document text.
+  - Both are computed in code, not guessed. Found missing entirely during
+    real testing: asked "how many times does the word X appear," the
+    model had nothing to call at all, so it guessed — 26 instead of the
+    real (roughly) 381 on a real 41-page document.
 - Says plainly when something isn't in the document, instead of
   inventing an answer.
 
@@ -239,8 +249,16 @@ were actually fixed in this code.
   truncated mid-table before the model ever sees it.
 - Asking "how many times does word X appear" had no matching tool at all
   (see "What this can do" above) — confirmed live on a real document: the
-  model guessed 26 where the real answer was 381. A dedicated tool now
-  computes this in code; confirmed live afterward, correct every time.
+  model guessed 26 where the real answer was 381. Two dedicated tools now
+  cover this: an exact row count for a real table, and a text search for
+  free text with no relevant table — confirmed live afterward, correct.
+- A tool call that's missing a required argument (e.g. the model forgot
+  to say which column to search) used to fail with a bare, unhelpful
+  error, and — confirmed live — a real model then answered with a
+  made-up number anyway instead of retrying or admitting it didn't know.
+  Every tool's error messages now name the missing field explicitly, and
+  the system prompt now explicitly forbids answering with a guessed value
+  after a visible tool error.
 - **The browser's own connection can drop and reconnect while a long
   answer is being generated** (a "connection lost, reconnecting..." banner
   during the wait) — confirmed at a real office deployment. Root cause,

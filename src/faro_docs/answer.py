@@ -75,6 +75,21 @@ TOOL_SCHEMAS = [
         }, "required": ["table", "column", "contains"]},
     }},
     {"type": "function", "function": {
+        "name": "count_matching_rows",
+        "description": (
+            "Zählt, wie viele Zeilen einer Tabelle in einer Spalte einen Text "
+            "enthalten -- die verlässliche Wahl für \"wie viele X gibt es\" auf "
+            "einer echten Tabelle (z. B. wie viele Zeilen in der Spalte "
+            "„Bezeichnung“ „Zuberhol“ enthalten). Liefert die exakte "
+            "Gesamtzahl, anders als find_rows, das nur eine begrenzte "
+            "Vorschau zurückgibt und bei vielen Treffern zu niedrig wäre."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "table": {"type": "string"}, "column": {"type": "string"},
+            "contains": {"type": "string"},
+        }, "required": ["table", "column", "contains"]},
+    }},
+    {"type": "function", "function": {
         "name": "count_text_occurrences",
         "description": (
             "Zählt, wie oft ein Wort oder eine Zeichenfolge im Fließtext des "
@@ -102,8 +117,15 @@ SYSTEM_PROMPT = (
     "1. Zahlen, Anzahlen und Summen NIE selbst zählen oder addieren -- auch "
     "nicht, wie oft ein Wort oder eine Textstelle im Dokument vorkommt. Rufe "
     "das passende Werkzeug auf: count_rows/sum_column für Tabellenzeilen und "
-    "-spalten, count_text_occurrences für ein Wort oder eine Zeichenfolge im "
-    "Fließtext. Deine eigene Zählung oder Rechnung ist nicht verlässlich.\n"
+    "-spalten. Für \"wie viele X gibt es\" (z. B. wie viele Zuberholteile), "
+    "wenn X in einer Tabellenspalte vorkommt (Artikel, Bezeichnung, o. Ä.), "
+    "IMMER count_matching_rows auf dieser Spalte verwenden, NICHT "
+    "count_text_occurrences -- eine Zeile ist ein echtes Produkt, während "
+    "eine reine Textsuche durch wiederholte Kopf-/Fußzeilen auf jeder Seite "
+    "oder durch Zeilenumbrüche mitten im Wort verfälscht werden kann. "
+    "count_text_occurrences NUR verwenden, wenn es keine passende Tabelle "
+    "gibt oder ausdrücklich nach dem Fließtext gefragt wird. Deine eigene "
+    "Zählung oder Rechnung ist nicht verlässlich.\n"
     "2. Fragen nach der Anzahl der Tabellen, Blätter oder Dokumente IMMER mit "
     "list_tables beziehungsweise list_documents beantworten, nie schätzen.\n"
     "3. Eine Datei kann mehrere Tabellen enthalten, und es können mehrere "
@@ -140,7 +162,12 @@ SYSTEM_PROMPT = (
     "bei einer deutschen Frage, Englisch bei einer englischen Frage, "
     "ebenso in jeder anderen Sprache. Nicht die Sprache des Dokuments "
     "annehmen, wenn die Frage in einer anderen Sprache gestellt wurde. "
-    "In ganzen Sätzen, knapp."
+    "In ganzen Sätzen, knapp.\n"
+    "9. Liefert ein Werkzeugaufruf einen Fehler (ein „fehler“-Feld im "
+    "Ergebnis), NIE trotzdem eine Zahl oder einen Wert erfinden oder raten. "
+    "Entweder das Werkzeug mit korrigierten Argumenten erneut aufrufen, "
+    "oder in der Antwort klar sagen, dass die Anfrage nicht sicher "
+    "beantwortet werden konnte."
 )
 
 _FORCE_ENGLISH = (
@@ -159,6 +186,23 @@ def _system_prompt_for(response_language: str) -> str:
 
 def _all_tables(documents: list[Document]) -> dict:
     return {table.id: table for document in documents for table in document.tables}
+
+
+def _require(args: dict, key: str, tool: str):
+    """Read a required tool argument, or raise an error the model can act
+    on. A bare args[key] KeyError's own text is just "'column'" -- useless
+    for a model deciding whether to retry -- and a small model has been
+    observed answering with a made-up number after exactly this kind of
+    silent-looking failure instead of retrying or admitting it couldn't
+    tell. An explicit, instructive message makes a correct retry likelier.
+    """
+    value = args.get(key)
+    if value in (None, ""):
+        raise ValueError(
+            f"„{tool}“ wurde ohne das Pflichtfeld „{key}“ aufgerufen. "
+            f"Rufe das Werkzeug erneut auf und gib „{key}“ mit an."
+        )
+    return value
 
 
 def run_tool(name: str, args: dict, documents: list[Document]):
@@ -231,7 +275,7 @@ def run_tool(name: str, args: dict, documents: list[Document]):
         return table.row_count()
 
     if name == "sum_column":
-        column = args["column"]
+        column = _require(args, "column", name)
         if column not in table.frame.columns:
             raise ValueError(
                 f"Spalte „{column}“ gibt es nicht. Vorhanden: {list(table.frame.columns)}"
@@ -242,16 +286,18 @@ def run_tool(name: str, args: dict, documents: list[Document]):
         return float(numeric.sum())
 
     if name == "get_row":
-        return table.frame.iloc[int(args["index"])].to_dict()
+        return table.frame.iloc[int(_require(args, "index", name))].to_dict()
 
-    if name == "find_rows":
-        column = args["column"]
+    if name in {"find_rows", "count_matching_rows"}:
+        column = _require(args, "column", name)
         if column not in table.frame.columns:
             raise ValueError(
                 f"Spalte „{column}“ gibt es nicht. Vorhanden: {list(table.frame.columns)}"
             )
-        needle = str(args["contains"]).lower()
+        needle = str(_require(args, "contains", name)).lower()
         mask = table.frame[column].astype(str).str.lower().str.contains(needle, na=False)
+        if name == "count_matching_rows":
+            return int(mask.sum())
         return table.frame[mask].head(50).to_dict(orient="records")
 
     raise ValueError(f"Unbekanntes Werkzeug: {name}")
