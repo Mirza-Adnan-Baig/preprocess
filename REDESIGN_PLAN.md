@@ -103,71 +103,131 @@ slowness on its own, for free, before any redesign work.
   model is loaded and answering — tells us the real headroom for a
   larger `NUM_CTX` later.
 
-## Step 2 — The new architecture: DuckDB instead of one tool per operation
+## Step 2 — What the actual research says (not just the first suggestion that came up)
 
-**Core idea:** instead of ~10 bespoke Python functions (`count_rows`,
-`sum_column`, `query_table`, `column_stats`, `find_duplicates`, ...) each
-with their own JSON schema, load each extracted table into
-[DuckDB](https://duckdb.org/) (an embedded, file-free SQL database) and
-give the model **one tool: `run_sql(query)`**. The model writes ordinary
-SQL; DuckDB runs it against the real data; the result comes back.
+DuckDB was the first idea on the table, from a different AI's one-line
+suggestion. Before committing to it, it got checked properly against the
+alternatives — and it turns out DuckDB alone doesn't fix the thing that
+actually broke tonight. Here's the real comparison.
 
-**Why this is a real fix, not just a different tool:**
+### RAG (chunk + embed + retrieve) — ruled out as the primary approach
 
-- Collapses ~10 tool schemas into 1 small one — directly addresses the
-  measured context-overhead problem from Step 0 of this document.
-- Every general-purpose LLM has been extensively trained on writing SQL —
-  filtering, `GROUP BY`, `COUNT(DISTINCT ...)`, `WHERE ... LIKE`, sorting,
-  joins — all the things we hand-built bespoke tools for tonight are
-  *native* SQL operations. This should be far more reliable than the
-  model correctly picking 1-of-13 custom tools and filling in our exact
-  argument names.
-- `search_text` (full-text search across the raw, un-tabular document
-  text) and something like `document_info` stay as their own small tools
-  — they're not naturally SQL-shaped and don't need to be forced into it.
+This is the most common answer to "document too big for context," so it's
+worth ruling out explicitly rather than silently skipping it. Real
+published research (a 2026 benchmark built specifically to test this)
+found that RAG performs **badly at exactly the question types this
+project exists for** — counting, min/max, top-k, "how many" — the
+strongest tested approach scored only 1.51 out of a possible F1 of 100 on
+these. The reason is structural, not a tuning problem: RAG retrieves the
+*k* most relevant chunks, but a question like "how many Zubehör items are
+there" needs *every single row*, not the most relevant few — missing even
+one row silently gives a wrong count. **Not a fit for this project's core
+need**, however tempting "just add a vector database" sounds.
 
-**What doesn't change:** the German number-format cleanup
-(`german.py`) still runs *before* a table is loaded into DuckDB, so
-DuckDB only ever sees already-correctly-typed columns (real numbers as
-numbers, EAN/barcode columns kept as text with leading zeros intact) —
-none of tonight's correctness fixes are lost, only the query layer on top
-changes.
+### DuckDB (or any single `run_sql` tool) — real upside, but doesn't fix tonight's actual bug on its own
 
-**The one new dependency:** the `duckdb` Python package. Confirmed
-tonight: **it is not currently in Open WebUI's bundled Python
-environment** — this needs a one-time `pip install duckdb` into that
-environment once there's real access to the Mac Studio. It's a single
-lightweight package with no complex build step, so this should be a small
-ask once shell access exists — but it is a new requirement, worth
-flagging explicitly since "no pip installs required" was a hard
-constraint earlier in this project when there was no shell access at all.
+The real appeal: SQL is something every general-purpose LLM has been
+extensively trained on, so replacing ~10 bespoke tools (`count_rows`,
+`query_table`, `column_stats`, ...) with one `run_sql` tool should mean
+far fewer "wrong tool, wrong argument name" mistakes, and cuts the tool
+schema overhead that measurably tripled tonight.
+
+**But here's what checking it properly found:** `run_sql` would still be
+delivered to the model exactly the same way today's 13 tools are — through
+Ollama's native `tools=` mechanism. That mechanism is exactly where the
+actual bug lives (the Qwen3.5/3.6 tool-call-leaking-as-text bug from
+`REDESIGN_PLAN.md`'s Step 1 findings). Fewer tools reduces *how often* the
+model has to make a choice, and SQL is a more natural choice to make
+correctly — genuine, real improvements — but it does not, by itself,
+touch the mechanism that actually broke tonight. If the Ollama version is
+the real cause (very plausible — see Step 1), a DuckDB rewrite alone
+would still ride on the same fixed bug underneath a nicer interface.
+
+### Structured output (`format`) — the piece that actually addresses the root mechanism
+
+Real, separate Ollama feature, not something invented for this project:
+since Ollama v0.5, you can pass a JSON Schema via the `format` parameter,
+and Ollama constrains the model's output **at the token-generation level**
+(masking any token that would violate the schema) so the result is
+*always* valid, parseable JSON — a fundamentally different, more mature
+mechanism than hoping a model's own training-time tool-calling convention
+happens to match what Ollama's parser for that model family expects.
+
+This is the one lever that's architecture-independent: whether the tool
+surface ends up being today's ~10 functions, one `run_sql` tool, or
+anything else, wrapping "what should happen next" in a `format`-
+constrained JSON response (e.g. `{"action": "tool"|"answer", "tool":
+"...", "arguments": {...}, "answer": "..."}`) and parsing that ourselves
+sidesteps Ollama's model-specific native tool-call parsing entirely —
+including whatever *future* tool-calling bug the next model family
+happens to ship with, which native `tools=` calling has no defense
+against.
+
+Known limitation, so this isn't oversold: Ollama doesn't validate that
+generation actually *finished* cleanly — if the model stops mid-response,
+the grammar constraint doesn't retroactively fix an incomplete JSON
+object. Basic validation-and-retry is still needed, but that's a far
+smaller, more tractable failure mode than "wrote Python pseudocode
+instead of any structured response at all."
+
+### The actual recommendation: layered, not a single swap
+
+1. **Ollama version + native/Docker check (Step 1)** — near-zero cost,
+   directly targets the exact bug reported tonight. Do this first,
+   always, regardless of anything below.
+2. **Answer more questions without a tool call at all.** The `FAKTEN`
+   block already precomputes some statistics — extending it (distinct
+   counts, missing counts, duplicates, min/max, most-common-values, *per
+   column*, computed once in code) so the model can read the answer
+   directly for the most common question types shrinks the surface area
+   where tool-calling reliability matters in the first place.
+3. **For genuinely arbitrary questions that do need a tool**, use
+   `format`-based structured output for the "which action, what
+   arguments" decision instead of relying on native `tools=` — this is
+   the actual fix for the failure mode observed tonight, independent of
+   which specific tool surface sits behind it.
+4. **Only after (1)-(3): decide whether the query tool itself should be
+   SQL/DuckDB or a small number of well-designed Python functions.**
+   Real trade-off, not urgent: SQL is more naturally trained into models
+   and consolidates several tools into one, at the cost of a new `pip
+   install duckdb` dependency (confirmed not in Open WebUI's bundled
+   environment) and a real rewrite. A handful of consolidated Python
+   tools needs no new dependency and less rewriting, at the cost of being
+   a less naturally-trained skill for the model. This choice matters far
+   less once (3) means either option gets its output parsed reliably.
 
 ## Step 3 — Build and test order (test before deploy, same discipline as before)
 
-1. Confirm Step 1's infrastructure check (native vs Docker, Ollama
-   version) — do this first regardless of anything else, since it could
-   change what "the problem" even is.
-2. Prototype the DuckDB query layer **locally, on the dev PC**, against
-   the same generated test documents already built
-   (`tools/make_test_document.py`) and known-correct answers — before
-   touching the Mac Studio at all.
-3. Rebuild the Pipe Function around this: extraction stays the same,
-   the ~10 bespoke table tools are replaced by `run_sql`, `search_text`
-   and `document_info` stay.
-4. Re-run the same realistic question set from
-   `docs/question-coverage.md` against the new version, and compare the
-   score directly against tonight's numbers (8/12 on the small local
-   model) — an honest, measured comparison, not an assumption that SQL is
-   automatically better.
-5. Only after that comparison looks genuinely better: deploy to the real
-   Mac Studio and test with the actual office models.
+Each step below is independently testable and independently valuable —
+this is deliberate, so progress doesn't depend on committing to the
+riskiest change (a full DuckDB rewrite) before knowing whether the
+cheaper fixes already solve most of the problem.
+
+1. **Ollama version + native/Docker check.** Zero code changes. Do this
+   first and report back — it might resolve the exact reported bug for
+   free, which would change how urgent everything below actually is.
+2. **Extend the precomputed `FAKTEN` facts block** so more common
+   questions are answerable without any tool call. Testable immediately
+   against the existing generated test documents and known answers.
+3. **Switch tool dispatch to `format`-based structured output**, on
+   today's existing tool set (no need to build DuckDB support first to
+   test whether this alone fixes the reliability problem). Re-run
+   `docs/question-coverage.md`'s question set and compare the score
+   directly against tonight's 8/12 baseline — measured, not assumed.
+4. **Only then, separately: evaluate SQL/DuckDB vs. consolidating the
+   existing Python tools** as the thing structured output is dispatching
+   to. Prototype locally against `tools/make_test_document.py`'s
+   known-correct answers before touching the Mac Studio.
+5. Deploy to the real Mac Studio and test with the actual office models
+   only after a step measures better locally than what it's replacing.
 
 ## Open questions for you to decide before any of this starts
 
-- Does DuckDB need to go through your IT/Head of IT for the one-time
-  `pip install`, or is that something you can do yourself once you have
-  access?
-- Do you want the native-vs-Docker check done and reported back *before*
-  any DuckDB prototyping starts, or done in parallel?
-- Any other approach you'd rather have investigated alongside DuckDB
-  before committing to it?
+- Do you want the native-vs-Docker + Ollama-version check done and
+  reported back before anything else starts, given it might change how
+  much of the rest is even needed?
+- Once shell access exists: is a one-time `pip install duckdb` (if step 4
+  ends up favoring SQL) something you can do yourself, or does it need
+  your Head of IT?
+- Any other approach you want investigated before step 4's SQL-vs-Python
+  decision gets made?
