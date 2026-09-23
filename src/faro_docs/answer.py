@@ -318,73 +318,6 @@ _REMINDER = (
     "document_info für Seitenzahl und Aufbau. Erst danach antworten."
 )
 
-_SEARCH_FIRST = (
-    "STOP. Du behauptest, etwas stehe nicht im Dokument, ohne danach "
-    "gesucht zu haben. Der oben sichtbare Ausschnitt ist bei langen "
-    "Dokumenten unvollständig -- das ist keine Grundlage für diese "
-    "Aussage. Rufe JETZT search_text mit einem passenden Stichwort auf "
-    "(wirklich aufrufen, nicht beschreiben). Erst wenn die Suche nichts "
-    "findet, darfst du sagen, dass es nicht im Dokument steht."
-)
-
-_TOOL_REQUIRED = (
-    "STOP. Du hast kein Werkzeug aufgerufen, sondern selbst gezählt oder "
-    "geschätzt. Das ist bei dieser Frage immer falsch, weil der oben "
-    "sichtbare Ausschnitt unvollständig ist. Rufe JETZT genau ein Werkzeug "
-    "richtig auf (nicht als Text beschreiben, sondern wirklich aufrufen) "
-    "und antworte erst mit dessen Ergebnis. Wenn wirklich kein Werkzeug "
-    "passt, sage klar, dass du es nicht sicher beantworten kannst -- nenne "
-    "keine selbst gezählte Zahl."
-)
-
-# Question wordings that can only be answered correctly by a tool. Kept
-# deliberately broad: the cost of a false positive is one short answer
-# being held back for a moment, the cost of a false negative is a
-# confidently wrong number.
-_QUANTITATIVE_HINTS = (
-    "wie viele", "wieviele", "wie oft", "anzahl", "summe", "gesamt",
-    "durchschnitt", "teuerst", "billigst", "größte", "groesste", "kleinste",
-    "höchste", "hoechste", "niedrigste", "doppelt", "duplikat", "fehlen",
-    "fehlt", "leer", "seiten", "how many", "how much", "how often", "count",
-    "total", "sum of", "average", "most expensive", "cheapest", "highest",
-    "lowest", "duplicate", "missing", "empty", "pages",
-    # A price question rarely says "sum": "was kosten alle X zusammen" and
-    # "what do all the X cost together" both slipped through and were
-    # answered without a tool -- found by sweeping real question wordings.
-    "kosten", "kostet", "preis", "betrag", "wert", "zusammen", "insgesamt",
-    "cost", "price", "worth", "together", "altogether", "combined",
-)
-
-# Phrases that claim something isn't there. Claiming absence without ever
-# having searched is the other half of the same problem: on a long
-# document the visible extract is incomplete, so "it doesn't say" is
-# unfounded unless search_text actually came back empty.
-_ABSENCE_CLAIMS = (
-    "nicht im dokument", "steht nicht", "keine angabe", "nicht enthalten",
-    "nicht erwähnt", "nicht genannt", "kein hinweis", "nicht auffindbar",
-    "not in the document", "no explicit", "not mentioned", "does not contain",
-    "doesn't contain", "could not find", "couldn't find", "no information",
-    "there is no", "not specified", "not stated", "unable to find",
-)
-
-_SEARCH_TOOLS = {
-    "search_text", "count_text_occurrences", "find_rows",
-    "count_matching_rows", "query_table", "get_row",
-}
-
-
-def needs_a_tool(question: str) -> bool:
-    """Whether this question can only be answered correctly by a tool."""
-    lowered = (question or "").lower()
-    return any(hint in lowered for hint in _QUANTITATIVE_HINTS)
-
-
-def claims_absence(text: str) -> bool:
-    """Whether an answer asserts the document doesn't say something."""
-    lowered = (text or "").lower()
-    return any(claim in lowered for claim in _ABSENCE_CLAIMS)
-
-
 _FORCE_ENGLISH = (
     "\n\nOVERRIDE (takes precedence over every rule above, including rule 8): "
     "you must answer only in English, in every single reply, no matter what "
@@ -1203,28 +1136,13 @@ def answer(
     # to the model's own unreliable reading-based counting.
     tools = TOOL_SCHEMAS if documents else None
     used_tool_names: set[str] = set()
-    # A counting question answered without a single tool call is always
-    # the model reading the visible extract by eye, which on a long
-    # document is wrong by construction. Its text is held back for those
-    # questions until it's clear no correction is needed -- otherwise the
-    # wrong number would already be on screen before it gets fixed.
-    quantitative = needs_a_tool(question)
-    nudged = False
-    # Once per answer, not once per round -- a corrective round would
-    # otherwise print the same "preparing" notice a second time.
+    # Once per answer, not once per round.
     heartbeat_shown = False
 
     for _ in range(max_rounds):
         content = ""
         tool_calls = None
         seen_output = False
-        # Hold back any answer produced before a single tool has run: it
-        # is either a self-counted number or an unfounded "it doesn't say",
-        # and both get one corrective round below. Releasing it first would
-        # put the wrong answer on screen and then argue with it. Once a
-        # tool has run, or the correction has been used, streaming is live
-        # again as normal.
-        withhold = not used_tool_names and not nudged
         try:
             for item in _stream_with_heartbeat(
                 client, model, messages, tools,
@@ -1245,8 +1163,7 @@ def answer(
                 piece = item.get("message", {}).get("content", "")
                 if piece:
                     content += piece
-                    if not withhold:
-                        yield piece
+                    yield piece
                 if item.get("message", {}).get("tool_calls"):
                     tool_calls = item["message"]["tool_calls"]
         except Exception as error:
@@ -1261,31 +1178,6 @@ def answer(
             {"role": "assistant", "content": content, "tool_calls": tool_calls}
         )
         if not tool_calls:
-            # Claiming the document doesn't say something, without ever
-            # having searched it, is unfounded: the visible extract is
-            # incomplete on any long document. Found by sweeping real
-            # questions -- asked which company issued a 50-page list, it
-            # answered "no explicit company name is mentioned" while the
-            # name sat in the document text.
-            if (
-                not nudged
-                and claims_absence(content)
-                and not (used_tool_names & _SEARCH_TOOLS)
-            ):
-                nudged = True
-                messages.append({"role": "user", "content": _SEARCH_FIRST})
-                continue
-            if quantitative and not nudged and not used_tool_names:
-                # It answered a counting question without calling anything.
-                # Measured on a 50-page catalogue: it counted by eye and
-                # said 12, then 28, where the real answer was 554 -- and in
-                # one run it even wrote the tool call out as prose and
-                # invented its result. Ask once, pointedly, for a real call.
-                nudged = True
-                messages.append({"role": "user", "content": _TOOL_REQUIRED})
-                continue
-            if withhold:
-                yield content  # held back until it was clear no fix was needed
             sources = set()
             if used_tool_names & {"count_text_occurrences"}:
                 sources.add("textsuche")

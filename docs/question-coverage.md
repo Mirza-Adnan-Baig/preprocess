@@ -120,11 +120,24 @@ document, search for it first.
 | "Multiply column A by column B" | No arbitrary column arithmetic. |
 | Anything needing knowledge outside the document | By design — it answers from the document only. |
 
-## 9. Which tool the model picks — and what now forces it
+## 9. Which tool the model picks — and what turned out not to help
+
+> **Correction, same day, after real office testing:** the "corrective
+> round" described below (step 3) was reverted a few hours after this was
+> written. It helped the small local model in the measurement table below,
+> but on the real office model (`qwen3.6:latest`) it instead caused the
+> model to answer with `<tool_code>`/Python-pseudocode blocks — worse than
+> the problem it was meant to fix — and doubled generation time on every
+> question it triggered on, which made the connection-drop problem worse
+> too. The table below is kept as an honest record of what was measured
+> and why it looked like a win at the time; steps 1 and 2 are still in
+> effect, step 3 is not.
 
 The tools are deterministic and correct. What is *not* guaranteed is the
-model choosing the right one and filling it in properly, and this got
-much worse on long documents before it got better.
+model choosing the right one and filling it in properly, and a fix for
+that turned out to trade one failure mode for a worse one on a bigger
+model — worth reading in full before assuming "bigger model = safe to
+re-add this."
 
 **What was measured on a generated 50-page, 1,845-row catalogue** (built
 by `tools/make_test_document.py`, so the true answers are known) using
@@ -148,10 +161,8 @@ Three things make that work, and they matter in this order:
 2. **The key rule is repeated right after the question**, not only at the
    top, because on a long document the system prompt is thousands of
    tokens away by the time the model reaches the question.
-3. **A counting question answered with no tool call triggers one
-   corrective round** — "you did not call a tool, call one now, don't
-   give a self-counted number". The first, wrong answer is held back so
-   it never reaches the screen.
+3. ~~A counting question answered with no tool call triggers one
+   corrective round~~ — **reverted**, see the correction note above.
 
 ### The measured score, honestly
 
@@ -186,9 +197,12 @@ Two things are worth knowing about that number:
 - `sum_column(...)` with no filter → it summed **everything**, not just
   the group you asked about. The result says so in its own `hinweis`.
 - `op: 'equals'` returning 0 with a `hinweis` → the tool computed what
-  `contains` would return and asked for a retry; watch whether it obeys.
-- **No tool line at all** on a counting question → that should now be
-  impossible; if you see it, tell me.
+  `contains` would return; the model has to notice and retry on its own
+  now (no automatic corrective round anymore — see the correction above).
+- **No tool line at all, or `<tool_code>`/pseudocode text instead of an
+  answer** → a real, known small/model-quality gap on some models; tell
+  me the exact model tag and question if you see it, but this is
+  currently a residual, not something the pipe actively fixes.
 
 ## 10. Testing without the real file
 

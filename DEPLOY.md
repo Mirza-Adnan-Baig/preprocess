@@ -5,6 +5,35 @@ at FARO. Everything older than this (`START_HERE.md`, `openwebui/README.md`,
 the root `README.md`) was written while this was still being built and is
 now out of date — follow this one instead.
 
+## Update — Wednesday, 23 September 2026 (afternoon correction)
+
+**The corrective "call a tool now" retry described in the section below
+was tried, then reverted the same day after real office testing.**
+
+It measured well on a small local test model (turned wrong answers into
+right ones on a 50-page test catalogue). On real testing with the actual
+office model (`qwen3.6:latest`), it made things worse instead:
+
+- The model started responding with `<tool_code>` / Python-pseudocode
+  blocks instead of real answers — likely the directive "STOP, call a
+  tool now, don't describe it" language pushing a stronger model toward
+  *demonstrating* a function call as code rather than using Ollama's real
+  tool-calling mechanism.
+- Every time it triggered, it silently doubled the number of model
+  generation rounds for that question — making the separate
+  connection-drop problem measurably worse on top of it.
+
+**Reverted.** The pipe now streams the model's answer immediately again,
+with no withholding or retry round, exactly as before that change. The
+new tools from earlier today (`query_table`, `column_stats`,
+`find_duplicates`, `document_info`, `search_text`) are kept — those
+weren't implicated in the regression.
+
+If a bigger model still occasionally answers a count without using a
+tool, that's now a plain small/model-quality residual again (documented
+honestly as such), not something the pipe fights with a scripted
+correction — the correction itself was the more expensive problem.
+
 ## Update — Wednesday, 23 September 2026
 
 **What changed tonight:**
@@ -16,9 +45,9 @@ now out of date — follow this one instead.
 - Fixed: a long document's context is now budgeted to actually fit
   `NUM_CTX` — it was silently overflowing and deleting the system prompt
   on a realistic 50-page document.
-- Fixed: a counting question answered without calling any tool now
-  triggers one corrective retry instead of letting a guessed number reach
-  you.
+- ~~Fixed: a counting question answered without calling any tool now
+  triggers one corrective retry~~ — **reverted a few hours later, see the
+  correction section above.** Made things worse on the real office model.
 - Added: `query_table`, `column_stats`, `find_duplicates`,
   `document_info`, `search_text` — cover filtering, sums-over-a-filter,
   top-N, duplicates, missing values, page count, and searching a document
@@ -396,11 +425,12 @@ were actually fixed in this code.
   context against a 16,384 window, so those rules were being deleted
   before the model saw them. The context is now budgeted from `NUM_CTX`
   and shrinks to fit, keeping the table and the document's end.
-- **A counting question answered without calling any tool now triggers
-  one corrective round**, and the first (eyeballed) answer is held back
-  so it never reaches the screen. On the 50-page catalogue this turned
-  "12" and then "28" into the correct **554** — see
-  `docs/question-coverage.md` §9 for the measurements.
+- ~~A counting question answered without calling any tool triggers a
+  corrective round~~ — **tried, then reverted the same day**: it helped on
+  the small local test model but made the real office model respond with
+  pseudocode instead of a real answer, and doubled generation time on
+  every question it touched. See the correction section near the top of
+  this file and `docs/question-coverage.md` §9.
 - A long document used to be cut to its first ~13 pages for the model's
   own reading, so anything at the end (totals, payment terms, signature)
   was invisible. The extract now keeps both ends, long tables show their
