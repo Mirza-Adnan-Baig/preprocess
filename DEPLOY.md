@@ -1,9 +1,62 @@
 # Deploying at the office (Mac Studio)
 
 This is the one document you need to set this up on the real Open WebUI
-at FARO. Everything older than this (`START_HERE.md`, `openwebui/README.md`)
-was written while this was still being built and is now out of date —
-follow this one instead.
+at FARO. Everything older than this (`START_HERE.md`, `openwebui/README.md`,
+the root `README.md`) was written while this was still being built and is
+now out of date — follow this one instead.
+
+## Update — Wednesday, 23 September 2026
+
+**What changed tonight:**
+
+- Fixed: office deployment issues from the trailing-slash 405 error and
+  the browser "connection lost" freeze during long answers.
+- Fixed: EAN/barcode/identifier columns (with or without a leading zero)
+  no longer get silently corrupted into numbers.
+- Fixed: a long document's context is now budgeted to actually fit
+  `NUM_CTX` — it was silently overflowing and deleting the system prompt
+  on a realistic 50-page document.
+- Fixed: a counting question answered without calling any tool now
+  triggers one corrective retry instead of letting a guessed number reach
+  you.
+- Added: `query_table`, `column_stats`, `find_duplicates`,
+  `document_info`, `search_text` — cover filtering, sums-over-a-filter,
+  top-N, duplicates, missing values, page count, and searching a document
+  far larger than what the model reads directly.
+- Added: `tools/inspect_document.py` (see what's really extracted from a
+  file, no model involved) and `tools/make_test_document.py` (generate a
+  realistic test catalogue with known correct answers, so you can test
+  without the real file).
+- Added: `docs/question-coverage.md` — a brainstormed list of what a real
+  FARO user would actually ask, with what works today and what doesn't.
+- Measured honestly on a generated 50-page test document: 8 of 12
+  realistic questions answered correctly by the small local test model
+  (up from 5 of 12 before tonight). The remaining failures are the model
+  writing a tool call out as prose instead of making it — a small-model
+  weakness, not a tool problem; your 27B/35B models should do better.
+
+**What to do now:**
+
+1. `git pull` to get everything below.
+2. Re-deploy `openwebui/faro_document_assistant.py` the usual way — Admin
+   Panel → Functions → delete the old Function → create it fresh with the
+   full contents of that file (don't edit in place; see "The file was
+   pasted but..." in Troubleshooting below for why).
+3. If you haven't already: run Step 3's `setup_openwebui` command once
+   (skip if it's already been done and still working), and set `NUM_CTX`
+   under Step 4 if you haven't — this is more important now than before,
+   since it directly affects whether a long document gets silently
+   truncated.
+4. Open `docs/question-coverage.md` and work through §10's suggested test
+   order with your real documents — it tells you exactly what to ask and
+   what tool should answer it.
+5. Specifically try a filtered/summed question (e.g. "what do all the
+   Zubehör parts cost together?") and read the tool-call trace under the
+   answer — §9 of that same doc explains exactly what to look for and
+   why it matters.
+6. Tell me what breaks. Screenshots aren't needed — the tool-call trace
+   line under each answer plus what you expected is usually enough for me
+   to find the exact cause.
 
 ## What this actually is, in one paragraph
 

@@ -1,5 +1,11 @@
 # local-llm-pipeline
 
+**This file describes an early, now-superseded design (Phase 0's
+`src/extractors`/`src/agent.py` prototype). The real, current system is
+the Open WebUI Pipe function in `openwebui/faro_document_assistant.py` —
+read [DEPLOY.md](DEPLOY.md) for what it does, how to deploy it, and the
+latest changes.** Kept below for history only.
+
 **New here? Read [START_HERE.md](START_HERE.md) first** — it explains the
 whole project from scratch, what happened overnight, and how to set this
 up on a fresh machine. This README is the shorter technical reference.
