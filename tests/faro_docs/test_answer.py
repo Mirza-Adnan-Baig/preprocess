@@ -109,7 +109,7 @@ class TestTools:
         table (e.g. 41 pages of barcode/EAN rows merged into one table)
         with more matches than that must not be undercounted by treating
         the preview's length as the real total."""
-        frame = pd.DataFrame({"Artikel": [f"Zuberhol {i}" for i in range(80)]})
+        frame = pd.DataFrame({"Artikel": [f"Zubehör {i}" for i in range(80)]})
         documents = [
             Document(
                 id="dok1", filename="a.csv", media_type="text/csv", text="",
@@ -118,12 +118,12 @@ class TestTools:
         ]
         assert run_tool(
             "count_matching_rows",
-            {"table": "dok1:t1", "column": "Artikel", "contains": "Zuberhol"},
+            {"table": "dok1:t1", "column": "Artikel", "contains": "Zubehör"},
             documents,
         ) == 80
         preview = run_tool(
             "find_rows",
-            {"table": "dok1:t1", "column": "Artikel", "contains": "Zuberhol"},
+            {"table": "dok1:t1", "column": "Artikel", "contains": "Zubehör"},
             documents,
         )
         assert len(preview) == 50  # confirms the undercount find_rows alone would give
@@ -131,15 +131,20 @@ class TestTools:
 
 def _text_documents():
     """Documents with no tables at all -- a plain-text upload -- and text
-    with a known, hand-countable number of occurrences of a search term."""
+    with a known, hand-countable number of occurrences of a search term.
+
+    "Zubereitung" (preparation) is a deliberate near-miss decoy: it shares
+    the first four letters with "Zubehör" (accessories) but is a
+    completely different, unrelated word, so it must NOT count as a match.
+    """
     return [
         Document(
             id="dok1", filename="a.txt", media_type="text/plain",
-            text="Zuberhol Zuberhol zuberhol nichts Zubehör Zuberhol",
+            text="Zubehör Zubehör zubehör nichts Zubereitung Zubehör",
         ),
         Document(
             id="dok2", filename="b.txt", media_type="text/plain",
-            text="Zuberhol einmal hier",
+            text="Zubehör einmal hier",
         ),
     ]
 
@@ -147,22 +152,22 @@ def _text_documents():
 class TestCountTextOccurrences:
     def test_counts_case_insensitive_matches_in_one_document(self):
         assert run_tool(
-            "count_text_occurrences", {"search": "Zuberhol", "document": "dok1"},
+            "count_text_occurrences", {"search": "Zubehör", "document": "dok1"},
             _text_documents(),
-        ) == 4  # 3x "Zuberhol"/"zuberhol" + 1x inside "Zubehör" is NOT a match
+        ) == 4  # 3x "Zubehör"/"zubehör" + 1x inside "Zubereitung" is NOT a match
 
     def test_alle_scopes_to_most_recently_attached_document(self):
         """Same reasoning as count_rows's 'alle': a stale earlier upload
         must not silently get folded into a plain word-count question."""
         assert run_tool(
-            "count_text_occurrences", {"search": "Zuberhol", "document": "alle"},
+            "count_text_occurrences", {"search": "Zubehör", "document": "alle"},
             _text_documents(),
         ) == 1
 
     def test_alle_dokumente_is_the_real_cross_document_total(self):
         assert run_tool(
             "count_text_occurrences",
-            {"search": "Zuberhol", "document": "alle_dokumente"},
+            {"search": "Zubehör", "document": "alle_dokumente"},
             _text_documents(),
         ) == 5
 

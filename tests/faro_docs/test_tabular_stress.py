@@ -221,14 +221,14 @@ class TestExcelRealWorldShapes:
         """Whatever works on a CSV has to work on a sheet -- same tools,
         same behaviour, no format-specific surprises."""
         raw = _workbook({"Katalog": pd.DataFrame({
-            "Bezeichnung": ["Zuberhol Akku", "LCD Display", "Zuberhol Kabel"],
+            "Bezeichnung": ["Zubehör Akku", "LCD Display", "Zubehör Kabel"],
             "Einzelpreis": ["4,86", "10,93", "2,50"],
         })})
         doc = ingest_excel(raw, document_id="dok1", filename="katalog.xlsx")
         table = _table(doc)
         result = run_tool("query_table", {
             "table": table.id,
-            "filters": [{"column": "Bezeichnung", "op": "contains", "value": "Zuberhol"}],
+            "filters": [{"column": "Bezeichnung", "op": "contains", "value": "Zubehör"}],
             "aggregate": {"func": "sum", "column": "Einzelpreis"},
         }, [doc])
         assert result["sum"] == pytest.approx(7.36)

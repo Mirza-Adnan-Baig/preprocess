@@ -184,7 +184,7 @@ re-create it from scratch rather than editing in place.
   just counting questions.
 - Counts how many times a word or phrase appears — two different ways,
   chosen automatically for whichever is actually reliable:
-  - **On a real table** (e.g. "how many Zuberhol accessories are there" on
+  - **On a real table** (e.g. "how many Zubehör accessories are there" on
     a parts catalog): counts matching *rows* in the right column
     (`count_matching_rows`), which is what a product catalog with
     repeated page headers/footers on every page actually needs — a plain
@@ -208,7 +208,7 @@ re-create it from scratch rather than editing in place.
   far past what the model can see directly. Every counting and summing
   tool has always read the complete data.
 - **Answers the awkward questions too**, not just counts and sums:
-  - "Welche Artikel kosten über 10 Euro?" / "Was kosten alle Zuberhole
+  - "Welche Artikel kosten über 10 Euro?" / "Was kosten alle Zubehörteile
     zusammen?" / "Die 5 teuersten Positionen?" (`query_table`)
   - "Wie viele verschiedene Artikel?" / "Welcher Wert kommt am
     häufigsten vor?" (`column_stats`)
@@ -246,7 +246,7 @@ involved, so you find out in seconds whether a wrong answer is an
 extraction problem or a model problem:
 
 ```bash
-python -m tools.inspect_document "Katalog.pdf" --frage "Zuberhol"
+python -m tools.inspect_document "Katalog.pdf" --frage "Zubehör"
 ```
 
 It prints page count, every table, every column with how it was read
@@ -398,7 +398,7 @@ model, not fixable by more code:**
 - **Picking the right tool is now the main limit, not the tools.** The
   tools are deterministic and correct; what isn't guaranteed is the
   model choosing the right one and filling it in properly. Measured on
-  the small local test model with "what do all the Zuberhol parts cost
+  the small local test model with "what do all the Zubehör parts cost
   together": it chose the right tool but matched the description column
   with `equals` on a partial value, so nothing matched. The tool now
   answers that with an explicit correction — *"no match with equals;

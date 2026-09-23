@@ -81,7 +81,7 @@ TOOL_SCHEMAS = [
             "Zählt, wie viele Zeilen einer Tabelle in einer Spalte einen Text "
             "enthalten -- die verlässliche Wahl für \"wie viele X gibt es\" auf "
             "einer echten Tabelle (z. B. wie viele Zeilen in der Spalte "
-            "„Bezeichnung“ „Zuberhol“ enthalten). Liefert die exakte "
+            "„Bezeichnung“ „Zubehör“ enthalten). Liefert die exakte "
             "Gesamtzahl, anders als find_rows, das nur eine begrenzte "
             "Vorschau zurückgibt und bei vielen Treffern zu niedrig wäre."
         ),
@@ -146,7 +146,7 @@ TOOL_SCHEMAS = [
         "description": (
             "Die flexible Tabellenabfrage: filtern, rechnen, sortieren. "
             "Für alles, was über einfaches Zählen hinausgeht, z. B. \"welche "
-            "Artikel kosten mehr als 10 Euro\", \"was kosten alle Zuberhole "
+            "Artikel kosten mehr als 10 Euro\", \"was kosten alle Zubehörteile "
             "zusammen\", \"die 5 teuersten Positionen\", \"welcher Artikel hat "
             "die größte Menge\", \"wie viele Zeilen haben kein Barcode\". "
             "filters verknüpft mehrere Bedingungen mit UND. Ohne aggregate "
@@ -234,7 +234,7 @@ SYSTEM_PROMPT = (
     "1. Zahlen, Anzahlen und Summen NIE selbst zählen oder addieren -- auch "
     "nicht, wie oft ein Wort oder eine Textstelle im Dokument vorkommt. Rufe "
     "das passende Werkzeug auf: count_rows/sum_column für Tabellenzeilen und "
-    "-spalten. Für \"wie viele X gibt es\" (z. B. wie viele Zuberholteile), "
+    "-spalten. Für \"wie viele X gibt es\" (z. B. wie viele Zubehörteile), "
     "wenn X in einer Tabellenspalte vorkommt (Artikel, Bezeichnung, o. Ä.), "
     "IMMER count_matching_rows auf dieser Spalte verwenden, NICHT "
     "count_text_occurrences -- eine Zeile ist ein echtes Produkt, während "
@@ -304,7 +304,7 @@ SYSTEM_PROMPT = (
 # Repeated directly after the question, not only in the system prompt.
 # On a long document the rules sit thousands of tokens away by the time
 # the model reaches the question, and a smaller model simply stops acting
-# on them -- measured on a 50-page catalogue, it counted "Zuberhol" by eye
+# on them -- measured on a 50-page catalogue, it counted "Zubehör" by eye
 # and said 12 where the real answer was 554, without calling any tool at
 # all, while the same model used tools correctly on a short document.
 # The last thing before generation gets the most attention, so the one
@@ -870,7 +870,7 @@ def run_tool(name: str, args: dict, documents: list[Document]):
 
         # A filter that matches nothing is the most common way one of these
         # calls goes wrong -- usually op=equals against a descriptive column
-        # where only part of the text was given ("Zuberhol" vs "Zuberhol Akku
+        # where only part of the text was given ("Zubehör" vs "Zubehör Akku
         # Typ 3"). Confirmed live: the old error blamed the column for having
         # no numbers, which is not what went wrong, and the model gave up and
         # invented a total instead of retrying. Say what actually happened and

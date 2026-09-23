@@ -20,12 +20,12 @@ import random
 _PARTS = [
     "Akku mit TI-IC Chip für Apple iPhone {m}",
     "LCD + Touch für Apple iPhone {m} AAA+ schwarz",
-    "Zuberhol Ladekabel USB-C {m} cm",
-    "Zuberhol Schutzglas für iPhone {m}",
+    "Zubehör Ladekabel USB-C {m} cm",
+    "Zubehör Schutzglas für iPhone {m}",
     "Kameraglas für Apple iPhone {m}",
     "Akkudeckel für Samsung Galaxy S{m}",
     "Displayeinheit Samsung Galaxy A{m} Service Pack",
-    "Zuberhol Werkzeugset {m}-teilig",
+    "Zubehör Werkzeugset {m}-teilig",
     "Ladebuchse Flexkabel iPhone {m}",
     "Hörmuschel Lautsprecher iPhone {m}",
 ]
@@ -75,8 +75,8 @@ def _german_float(text: str) -> float:
 def print_answers(rows: list[list[str]]) -> None:
     prices = [_german_float(row[4]) for row in rows]
     quantities = [int(row[5]) for row in rows]
-    zuberhol = [row for row in rows if "Zuberhol" in row[1]]
-    zuberhol_total = sum(_german_float(row[4]) for row in zuberhol)
+    zubehör = [row for row in rows if "Zubehör" in row[1]]
+    zubehör_total = sum(_german_float(row[4]) for row in zubehör)
     missing_barcode = sum(1 for row in rows if not row[2])
     leading_zero = sum(1 for row in rows if row[3].startswith("0"))
     eans = [row[3] for row in rows]
@@ -88,9 +88,9 @@ def print_answers(rows: list[list[str]]) -> None:
     print("(die Zahlen hier sind gerechnet, nicht geschätzt)")
     print("=" * 72)
     print(f"  Wie viele Positionen hat die Liste?           {len(rows)}")
-    print(f"  Wie viele Zuberhol-Artikel gibt es?           {len(zuberhol)}")
-    print(f"  Was kosten alle Zuberhol-Artikel zusammen?    "
-          f"{zuberhol_total:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
+    print(f"  Wie viele Zubehör-Artikel gibt es?           {len(zubehör)}")
+    print(f"  Was kosten alle Zubehör-Artikel zusammen?    "
+          f"{zubehör_total:,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
     print(f"  Was ist die Summe aller Einzelpreise?         "
           f"{sum(prices):,.2f} EUR".replace(",", "X").replace(".", ",").replace("X", "."))
     print(f"  Wie viele Stück insgesamt (Menge summiert)?   {sum(quantities)}")

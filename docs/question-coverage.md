@@ -19,7 +19,7 @@ whether it's a tool problem or the model picking the wrong tool.
 |---|---|---|
 | "Wie viele Positionen hat die Rechnung?" | `count_rows` | ✅ |
 | "Wie viele Zeilen hat die Liste?" | `count_rows` | ✅ |
-| "Wie viele Zuberhole sind in der Liste?" | `count_matching_rows` | ✅ |
+| "Wie viele Zubehörteile sind in der Liste?" | `count_matching_rows` | ✅ |
 | "Wie viele verschiedene Artikel gibt es?" | `column_stats` → `verschiedene_werte` | ✅ |
 | "Wie oft kommt das Wort Akku vor?" | `count_text_occurrences` | ✅ |
 | "Wie viele Artikel haben Menge größer als 1?" | `query_table` (`op: gt`) | ✅ |
@@ -34,7 +34,7 @@ whether it's a tool problem or the model picking the wrong tool.
 | Question | Tool | Status |
 |---|---|---|
 | "Was ist die Gesamtsumme?" | `sum_column` | ✅ |
-| "Was kosten alle Zuberhole zusammen?" | `query_table` (filter + `sum`) | ⚠️ works, but small models often forget the filter — see §9 |
+| "Was kosten alle Zubehörteile zusammen?" | `query_table` (filter + `sum`) | ⚠️ works, but small models often forget the filter — see §9 |
 | "Was ist der Durchschnittspreis?" | `query_table` (`avg`) / `column_stats` | ✅ |
 | "Was ist der teuerste Artikel?" | `query_table` (`sort_desc`, `limit: 1`) | ✅ |
 | "Was ist der billigste Artikel?" | `query_table` (`sort_by`, `limit: 1`) | ✅ |
@@ -128,7 +128,7 @@ much worse on long documents before it got better.
 
 **What was measured on a generated 50-page, 1,845-row catalogue** (built
 by `tools/make_test_document.py`, so the true answers are known) using
-the small local model, asking "How many Zuberhol articles are in this
+the small local model, asking "How many Zubehör articles are in this
 list?" — the true answer is **554**:
 
 | Attempt | What happened | Answer |
@@ -213,7 +213,7 @@ guessed. Ask the assistant the same questions and compare.
 model involved:
 
 ```bash
-python -m tools.inspect_document "Katalog.pdf" --frage "Zuberhol"
+python -m tools.inspect_document "Katalog.pdf" --frage "Zubehör"
 ```
 
 It prints the page count, every table, every column with how it was
@@ -225,7 +225,7 @@ tool-call trace. If this output is already wrong, it's extraction.
 
 Verified on the generated 50-page file: all 1,845 rows merged into one
 table across all pages, barcode and EAN kept as exact text (including a
-leading zero), German prices parsed, 554 Zuberhol rows — matching the
+leading zero), German prices parsed, 554 Zubehör rows — matching the
 generator's own ground truth exactly.
 
 ## 11. Suggested test order at work

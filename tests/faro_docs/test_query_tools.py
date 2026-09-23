@@ -41,9 +41,9 @@ def _catalogue():
     frame = pd.DataFrame({
         "Artikelnr": ["33447", "32965", "31002", "30500"],
         "Bezeichnung": [
-            "Zuberhol Akku iPhone 7",
+            "Zubehör Akku iPhone 7",
             "LCD + Touch iPhone 7",
-            "Zuberhol Kabel USB-C",
+            "Zubehör Kabel USB-C",
             "Display iPhone 12",
         ],
         "Barcode": ["4051805334476", "4051805329656", "", "4051805334476"],
@@ -69,12 +69,12 @@ def _catalogue():
 
 class TestQueryTable:
     def test_filtered_sum(self):
-        """'What do all the Zuberhol parts cost together?' -- the single
+        """'What do all the Zubehör parts cost together?' -- the single
         most likely real question on a parts catalogue, and one that no
         earlier tool could answer."""
         result = run_tool("query_table", {
             "table": "dok1:t1",
-            "filters": [{"column": "Bezeichnung", "op": "contains", "value": "Zuberhol"}],
+            "filters": [{"column": "Bezeichnung", "op": "contains", "value": "Zubehör"}],
             "aggregate": {"func": "sum", "column": "Einzelpreis"},
         }, _catalogue())
         assert result["sum"] == pytest.approx(7.36)
@@ -115,7 +115,7 @@ class TestQueryTable:
         result = run_tool("query_table", {
             "table": "dok1:t1",
             "filters": [
-                {"column": "Bezeichnung", "op": "contains", "value": "Zuberhol"},
+                {"column": "Bezeichnung", "op": "contains", "value": "Zubehör"},
                 {"column": "Einzelpreis", "op": "lt", "value": "3"},
             ],
             "aggregate": {"func": "count"},
@@ -132,20 +132,20 @@ class TestQueryTable:
 
     def test_zero_matches_explains_itself_instead_of_blaming_the_column(self):
         """op=equals against a descriptive column is the most common way
-        one of these calls goes wrong ("Zuberhol" vs "Zuberhol Akku
+        one of these calls goes wrong ("Zubehör" vs "Zubehör Akku
         iPhone 7"). Confirmed live: the old error claimed the column had
         no numbers -- not what went wrong -- and the model gave up and
         invented a total. The result must name the real problem and show
         real values so the next call can be corrected."""
         result = run_tool("query_table", {
             "table": "dok1:t1",
-            "filters": [{"column": "Bezeichnung", "op": "equals", "value": "Zuberhol"}],
+            "filters": [{"column": "Bezeichnung", "op": "equals", "value": "Zubehör"}],
             "aggregate": {"func": "sum", "column": "Einzelpreis"},
         }, _catalogue())
         assert result["treffer_gesamt"] == 0
         assert "contains" in result["hinweis"]
         assert any(
-            "Zuberhol Akku" in value
+            "Zubehör Akku" in value
             for value in result["beispielwerte"]["Bezeichnung"]
         )
 
@@ -369,7 +369,7 @@ class TestNaturalCallsThatUsedToBeRefused:
         table tools do too. That single mismatch caused most of the
         failures in the sweep."""
         assert run_tool("count_matching_rows", {
-            "table": "alle", "column": "Bezeichnung", "contains": "Zuberhol",
+            "table": "alle", "column": "Bezeichnung", "contains": "Zubehör",
         }, _catalogue()) == 2
 
     def test_ambiguous_alle_still_refuses_but_names_the_real_ids(self):

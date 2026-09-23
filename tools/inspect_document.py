@@ -7,7 +7,7 @@ fine, model picked the wrong tool). Those need completely different
 fixes, and guessing between them wastes a lot of time.
 
     python -m tools.inspect_document "Katalog.pdf"
-    python -m tools.inspect_document "Katalog.pdf" --frage "Zuberhol"
+    python -m tools.inspect_document "Katalog.pdf" --frage "Zubehör"
 
 With --frage it also runs the deterministic searches for that term, so
 you can see the true counts before ever asking the model.
